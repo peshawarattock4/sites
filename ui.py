@@ -5,8 +5,10 @@ import urllib.parse
 
 import streamlit as st
 
-GRADS = [("#0f172a", "#e11d48"), ("#1e1b4b", "#7c3aed"), ("#064e3b", "#16a34a"),
-         ("#7c2d12", "#f59e0b"), ("#0c4a6e", "#0ea5e9")]
+# Banner gradients — ek hi indigo family + ek red (sale ke liye).
+GRADS = [("#1e1b4b", "#4338ca"),
+         ("#0f172a", "#e11d48"),
+         ("#312e81", "#6d28d9")]
 
 
 # ------------------------------------------------------------------ helpers
@@ -72,8 +74,8 @@ def build_slides(products: list, custom_banners: list, cur="Rs") -> list:
             "title": b.get("title") or "Special Offer",
             "sub": b.get("subtitle") or "",
             "img": b.get("image_url") or "",
-            "from": b.get("bg_from") or "#0f172a",
-            "to": b.get("bg_to") or "#e11d48",
+            "from": b.get("bg_from") or "#1e1b4b",
+            "to": b.get("bg_to") or "#4338ca",
             "price": "", "old": "", "off": "",
         })
     for p in products:
