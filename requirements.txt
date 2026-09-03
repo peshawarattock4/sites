@@ -1,4 +1,8 @@
-streamlit==1.42.0
-supabase==2.13.0
-pandas==2.2.3
-pillow==11.1.0
+# ============================================================
+#  Shop  •  Streamlit + Supabase storefront
+#  Recommended Python: 3.12 or 3.13
+#  Install: pip install --only-binary=:all: -r requirements.txt
+# ============================================================
+
+streamlit==1.62.0
+supabase>=2.10,<3
