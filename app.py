@@ -1,4 +1,5 @@
 import re
+import time
 import uuid
 import streamlit as st
 
@@ -7,6 +8,7 @@ st.set_page_config(page_title=SHOP.get("name", "Shop"), page_icon="🛍️",
                    layout="wide", initial_sidebar_state="collapsed")
 
 import db
+import notify
 from styles import inject_css
 from ui import (announcement, section, empty, hero_slider, build_slides,
                 product_card, money, wa_link, wa_float, chat_html, e)
@@ -16,6 +18,11 @@ S = db.get_settings()
 CUR = SHOP.get("currency", "Rs")
 DELIV = float(S.get("delivery_fee") or 0)
 FREE_OVER = float(S.get("free_over") or 0)
+
+# Checkout par email zaroori banana ho to ise True kar dein — bas itna hi kaafi hai.
+EMAIL_REQUIRED = False
+# Ek hi chat session mein owner ko dobara WhatsApp alert kitni dair baad jaye (seconds)
+CHAT_ALERT_GAP = 300
 
 ss = st.session_state
 ss.setdefault("view", "home")
@@ -28,6 +35,25 @@ ss.setdefault("sid", uuid.uuid4().hex[:14])
 ss.setdefault("cname", "")
 ss.setdefault("cwa", "")
 ss.setdefault("order", None)
+ss.setdefault("wa_ping", 0.0)
+ss.setdefault("deep_done", False)
+
+
+# ------------------------------------------------------------------ deep link
+# Facebook / WhatsApp se aane wala link:  https://<site>/?p=<product-id>
+# Sirf PARHTE hain, URL likhte nahi — is liye koi rerun loop nahi banta.
+if not ss.deep_done:
+    ss.deep_done = True
+    try:
+        _pid = str(st.query_params.get("p") or "").strip()
+    except Exception:
+        _pid = ""
+    if _pid:
+        try:
+            if db.get_product(_pid):
+                ss.view, ss.pid = "product", _pid
+        except Exception:
+            pass                       # ghalat/purana id — chup-chaap home page
 
 
 # ------------------------------------------------------------------ helpers
@@ -63,6 +89,18 @@ def add_to_cart(p, qty=1):
         return
     ss.cart[p["id"]] = min(int(ss.cart.get(p["id"], 0)) + qty, int(p["stock"]))
     st.toast(f"✅ Cart mein add ho gaya: {p['title'][:28]}", icon="🛒")
+
+
+def ping_owner(text: str):
+    """Naye chat message par owner ko WhatsApp alert — background, throttled."""
+    now = time.time()
+    if now - float(ss.wa_ping or 0) < CHAT_ALERT_GAP:
+        return
+    ss.wa_ping = now
+    try:
+        notify.notify_new_chat(ss.cname, ss.cwa, text, ss.sid, S["shop_name"])
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ header
@@ -192,10 +230,12 @@ def view_product():
             add_to_cart(p, int(qty))
             st.rerun()
         if S.get("owner_whatsapp"):
+            ask = (f"Mujhe ye product chahiye: {p['title']} "
+                   f"({money(p['final_price'], CUR)})")
+            link = wa_link(S["owner_whatsapp"], ask)
             st.markdown(
                 f"<a class='wa' style='position:static;display:inline-flex;margin-top:10px' "
-                f"href='{wa_link(S['owner_whatsapp'], f'''Mujhe ye product chahiye: {p['title']} '''
-                                 f'''({money(p['final_price'],CUR)})''')}' target='_blank'>"
+                f"href='{link}' target='_blank'>"
                 f"💬 WhatsApp par order karein</a>", unsafe_allow_html=True)
 
     if p.get("description"):
@@ -256,6 +296,9 @@ def view_checkout():
         city = c2.text_input("City *", placeholder="Lahore")
         phone = c1.text_input("Phone Number *", placeholder="03001234567")
         wa = c2.text_input("WhatsApp Number *", placeholder="03001234567")
+        mail = st.text_input("Email " + ("*" if EMAIL_REQUIRED else "(optional)"),
+                             placeholder="aapka@gmail.com",
+                             help="Order ki confirmation isi email par bhej denge.")
         addr = st.text_area("Complete Delivery Address *", height=90,
                             placeholder="House #, Street, Area, Landmark…")
         note = st.text_input("Order note (optional)")
@@ -285,17 +328,40 @@ def view_checkout():
         errs.append("Address mukammal likhein (min 12 characters).")
     if len(city.strip()) < 2:
         errs.append("City likhein.")
+    mail_v = mail.strip().lower()
+    if EMAIL_REQUIRED and not mail_v:
+        errs.append("Email address likhein.")
+    if mail_v and not re.match(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$", mail_v):
+        errs.append("Email address sahi nahi lag raha.")
     if errs:
         for x in errs:
             st.error(x)
         return
 
-    row = db.create_order({
+    payload = {
         "customer_name": name.strip(), "phone": phone.strip(), "whatsapp": wa.strip(),
-        "address": addr.strip(), "city": city.strip(), "note": note.strip(),
-        "items": items, "subtotal": sub, "delivery_fee": fee, "total": tot, "status": "new",
-    })
-    ss.order = {"no": row.get("order_no", "—"), "name": name, "total": tot, "items": items}
+        "email": mail_v or None, "address": addr.strip(), "city": city.strip(),
+        "note": note.strip(), "items": items, "subtotal": sub, "delivery_fee": fee,
+        "total": tot, "status": "new",
+    }
+    with st.spinner("Order save ho raha hai…"):
+        try:
+            row = db.create_order(payload)
+        except Exception as ex:
+            # `email` column DB mein na ho to order phir bhi na rukay
+            if "email" not in str(ex).lower():
+                raise
+            row = db.create_order({k: v for k, v in payload.items() if k != "email"})
+            st.warning("Order save ho gaya, magar orders table mein `email` column "
+                       "nahi mila — migration SQL chala lein.")
+        payload["order_no"] = row.get("order_no", "—")
+        try:
+            sent = notify.notify_new_order(payload, items, CUR, S["shop_name"], sub, fee)
+        except Exception as ex:                 # notification kabhi order na rokay
+            sent = {"error": (False, str(ex))}
+
+    ss.order = {"no": payload["order_no"], "name": name, "total": tot,
+                "items": items, "email": mail_v, "sent": sent}
     ss.cart = {}
     go("thanks")
 
@@ -306,6 +372,10 @@ def view_thanks():
     section("🎉 Order Confirmed!")
     st.success(f"Shukriya **{e(o.get('name',''))}**! Aap ka order number "
                f"**#{o.get('no')}** hai. Hum jald WhatsApp par confirm karenge.")
+    sent = o.get("sent") or {}
+    if o.get("email") and bool(sent.get("customer_email", (False, ""))[0]):
+        st.info(f"📧 Confirmation email **{o['email']}** par bhej di gayi hai. "
+                f"Inbox mein na miley to Spam / Promotions bhi dekh lein.")
     lines = "\n".join(f"• {i['title']} x{i['qty']} = {money(i['line_total'],CUR)}"
                       for i in o.get("items", []))
     msg = (f"Assalam-o-Alaikum! Order #{o.get('no')}\n{lines}\n"
@@ -329,13 +399,15 @@ def view_chat():
                     st.error("Naam aur sahi WhatsApp number likhein.")
                 else:
                     ss.cname, ss.cwa = n.strip(), w.strip()
-                    db.send_message(ss.sid, "user",
-                                    "Assalam-o-Alaikum, mujhe madad chahiye.",
-                                    ss.cname, ss.cwa)
+                    first = "Assalam-o-Alaikum, mujhe madad chahiye."
+                    db.send_message(ss.sid, "user", first, ss.cname, ss.cwa)
+                    ping_owner(first)
                     st.rerun()
         return
 
-    st.caption(f"👤 {ss.cname}  •  Ticket **{ss.sid}**  •  auto-refresh 5s")
+    st.caption(f"👤 {ss.cname}  •  Ticket **{ss.sid}**  •  auto-refresh 5s"
+               + ("  •  owner ko WhatsApp par alert ja chuka hai ✅"
+                  if notify.wa_ready() else ""))
 
     @st.fragment(run_every=5)
     def stream():
@@ -344,6 +416,7 @@ def view_chat():
     stream()
     if txt := st.chat_input("Apna message likhein…"):
         db.send_message(ss.sid, "user", txt, ss.cname, ss.cwa)
+        ping_owner(txt)
         st.rerun()
 
 
