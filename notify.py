@@ -17,7 +17,7 @@ import threading
 import urllib.parse
 import urllib.request
 from email.message import EmailMessage
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid
 
 import streamlit as st
 
@@ -78,7 +78,8 @@ def wa_ready() -> bool:
 
 def status() -> str:
     """Admin panel mein dikhane ke liye chhota summary."""
-    return ("📧 Email: " + ("✅ ready" if email_ready() else "❌ set nahi") +
+    return ("📧 Email: " + ("✅ ready — " + email_cfg()["host"]
+                           if email_ready() else "❌ set nahi") +
             "   •   💬 WhatsApp alert: " +
             ("✅ ready (" + wa_cfg()["provider"] + ")" if wa_ready() else "❌ set nahi"))
 
@@ -103,12 +104,28 @@ def _text_of(html_body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
+def _clean_subject(s: str) -> str:
+    """Subject se emoji nikaal dein agar [email] plain_subject = true ho —
+    kuch spam filters emoji wale subject ko 'marketing' samajh lete hain."""
+    s = re.sub(r"\s{2,}", " ", str(s or "")).strip()
+    if not bool(_sec("email").get("plain_subject", False)):
+        return s
+    out = "".join(ch for ch in s if ord(ch) < 0x2190)
+    return re.sub(r"\s{2,}", " ", out).strip(" -\u2013\u2014\u2022") or "Notification"
+
+
 def _smtp_send(c: dict, to: str, subject: str, body_html: str, body_text: str):
     msg = EmailMessage()
-    msg["Subject"] = subject
+    msg["Subject"] = _clean_subject(subject)
     msg["From"] = formataddr((c["name"], c["sender"]))
     msg["To"] = to
     msg["Reply-To"] = c["owner"] or c["sender"]
+    # Date + Message-ID zaroori hain: inke baghair spam filters score barha dete hain
+    # (smtplib khud ye headers add nahi karta).
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=(c["sender"].split("@")[-1] or "localhost"))
+    if c["owner"]:
+        msg["List-Unsubscribe"] = "<mailto:" + c["owner"] + "?subject=unsubscribe>"
     msg.set_content(body_text)
     msg.add_alternative(body_html, subtype="html")
     ctx = ssl.create_default_context()
