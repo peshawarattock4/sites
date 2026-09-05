@@ -4,6 +4,11 @@ import hashlib
 import hmac
 import io
 import re
+import secrets as pysec
+import smtplib
+import time
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
 
 import streamlit as st
 
@@ -25,48 +30,37 @@ ss.setdefault("tries", 0)
 ss.setdefault("thread", None)
 ss.setdefault("flash", "")
 ss.setdefault("img_blob", None)
+ss.setdefault("otp_h", "")        # code ka SHA-256 — plain code kabhi save nahi
+ss.setdefault("otp_exp", 0.0)     # kab tak valid hai
+ss.setdefault("otp_to", "")       # kis address par bheja
+ss.setdefault("otp_try", 0)       # ghalat koshishein
+ss.setdefault("otp_at", 0.0)      # aakhri send ka waqt (resend gap)
+ss.setdefault("otp_n", 0)         # session mein kitne code bheje
 
 
 # ================================================================== LOGIN
-def _auth() -> dict:
+# Login sirf **email code** se hota hai: jo Gmail secrets ke [admin]
+# allowed_emails (ya [email] owner_email) mein likha hai, usi par 6-digit code
+# jaata hai aur wohi code portal kholta hai. Google OAuth hata diya gaya hai —
+# is liye Authlib ki bhi zaroorat nahi rahi.
+OTP_LEN = 6            # code kitne digits ka
+OTP_TTL = 600          # 10 minute tak chalega
+OTP_MAX_TRY = 5        # aik code par max ghalat koshishein
+OTP_GAP = 60           # dobara code bhejne se pehle itne second wait
+OTP_MAX_SEND = 6       # aik session mein max kitne code bhej sakte hain
+
+
+def mail_cfg() -> dict:
+    """[email] block. (st.secrets ke nested tables plain `dict` nahi hote,
+    is liye seedha dict() bana lete hain.)"""
     try:
-        return dict(st.secrets.get("auth", {}) or {})
+        return dict(st.secrets.get("email", {}) or {})
     except Exception:
         return {}
 
 
-def _google_section():
-    """[auth.google] table agar mojood hai to wo, warna None.
-    (st.secrets nested tables plain `dict` nahi hote, is liye duck-typing.)"""
-    g = _auth().get("google")
-    try:
-        if g is not None and hasattr(g, "get") and g.get("client_id"):
-            return dict(g)
-    except Exception:
-        pass
-    return None
-
-
-def google_ready() -> bool:
-    """[auth] block sahi bhara hua hai?"""
-    a = _auth()
-    if not (a.get("redirect_uri") and a.get("cookie_secret")):
-        return False
-    g = _google_section() or a
-    return bool(g.get("client_id") and g.get("client_secret"))
-
-
-def _claim(u, key, default=None):
-    """Google token ka field — missing ho to crash na ho."""
-    try:
-        v = getattr(u, key)
-    except Exception:
-        return default
-    return default if v is None else v
-
-
 def allowed_emails() -> set:
-    """Sirf ye Gmail/Google accounts admin portal khol sakte hain."""
+    """Sirf inhi email addresses par login code ja sakta hai."""
     cfg = st.secrets.get("admin", {})
     v = cfg.get("allowed_emails", [])
     if isinstance(v, str):
@@ -74,24 +68,131 @@ def allowed_emails() -> set:
     return {str(x).strip().lower() for x in (v or []) if str(x).strip()}
 
 
-def google_user():
-    """Signed-in Google user, warna None (auth set na ho to bhi None)."""
+def otp_targets() -> list:
+    """Code kahan bhej sakte hain — allow-list, warna [email] owner_email.
+    Yahan koi user-input address nahi aata, warna koi bhi code manga leta."""
+    lst = sorted(allowed_emails())
+    if lst:
+        return lst
+    own = str(mail_cfg().get("owner_email") or "").strip().lower()
+    return [own] if own else []
+
+
+def otp_ready() -> tuple:
+    """(chalega?, kyun nahi) — SMTP details aur target address dono laazmi."""
+    c = mail_cfg()
+    if str(c.get("enabled", True)).strip().lower() in ("false", "0", "no", "off"):
+        return False, "[email] mein `enabled = false` hai."
+    if not (str(c.get("sender") or "").strip()
+            and str(c.get("app_password") or "").strip()):
+        return False, "[email] mein `sender` / `app_password` missing hai."
+    if not otp_targets():
+        return False, "Koi admin email set nahi — `[admin] allowed_emails` bharein."
+    return True, ""
+
+
+def _mask(em: str) -> str:
+    """a****i@gmail.com — login page par poora address kisi ko na dikhe."""
+    em = str(em or "").strip()
+    if "@" not in em:
+        return em
+    u, d = em.split("@", 1)
+    u2 = (u[:1] + "*") if len(u) <= 2 else (u[0] + "*" * (len(u) - 2) + u[-1])
+    return u2 + "@" + d
+
+
+def _smtp_send(to: str, subject: str, body: str) -> tuple:
+    """Chhota stdlib SMTP sender — notify.py ke sath koi taalluq nahi rakhta
+    taake login kabhi kisi doosri file par depend na karay."""
+    c = mail_cfg()
+    host = str(c.get("host") or "smtp.gmail.com").strip()
+    port = int(c.get("port") or 587)
+    snd = str(c.get("sender") or "").strip()
+    pwd = str(c.get("app_password") or "").strip()
+    nm = str(c.get("sender_name") or "Admin Portal").strip()
+    m = EmailMessage()
+    m["From"] = formataddr((nm, snd))
+    m["To"] = to
+    m["Subject"] = subject
+    m["Date"] = formatdate(localtime=True)
+    m["Message-ID"] = make_msgid(domain=(snd.split("@")[-1] or None))
+    m.set_content(body)
     try:
-        u = st.user
-        return u if bool(getattr(u, "is_logged_in", False)) else None
-    except Exception:
-        return None
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=25) as s:
+                s.login(snd, pwd)
+                s.send_message(m)
+        else:
+            with smtplib.SMTP(host, port, timeout=25) as s:
+                s.ehlo()
+                s.starttls()
+                s.ehlo()
+                s.login(snd, pwd)
+                s.send_message(m)
+        return True, "Code bhej diya gaya."
+    except Exception as ex:
+        return False, type(ex).__name__ + ": " + str(ex)[:200]
+
+
+def send_otp(to: str) -> tuple:
+    """Naya code banao aur bhejo. Plain code kahin save nahi hota — sirf hash."""
+    to = str(to or "").strip().lower()
+    if to not in set(otp_targets()):
+        return False, "Ye address allow-list mein nahi hai."
+    now = time.time()
+    if int(ss.otp_n or 0) >= OTP_MAX_SEND:
+        return False, ("Is session mein bohat code bhej diye. Page reload karke "
+                       "dobara try karein.")
+    wait = int(OTP_GAP - (now - float(ss.otp_at or 0)))
+    if wait > 0:
+        return False, str(wait) + " second baad naya code bhej sakte hain."
+    code = "".join(str(pysec.randbelow(10)) for _ in range(OTP_LEN))
+    body = ("Admin Portal login code:\n\n    " + code + "\n\n"
+            "Ye code " + str(OTP_TTL // 60) + " minute tak chalega aur sirf aik "
+            "baar use hota hai.\n\nAgar ye request aap ne nahi ki to is email ko "
+            "ignore kar dein — code ke baghair koi portal nahi khol sakta.\n")
+    ok, info = _smtp_send(to, "Admin login code: " + code, body)
+    if not ok:
+        return False, info
+    ss.otp_h = hashlib.sha256(code.encode()).hexdigest()
+    ss.otp_exp = now + OTP_TTL
+    ss.otp_to = to
+    ss.otp_try = 0
+    ss.otp_at = now
+    ss.otp_n = int(ss.otp_n or 0) + 1
+    return True, "Code " + _mask(to) + " par bhej diya gaya."
+
+
+def check_otp(entered: str) -> tuple:
+    """Code match karo — hamesha constant-time compare se."""
+    if not ss.otp_h:
+        return False, "Pehle code bhejein."
+    if time.time() > float(ss.otp_exp or 0):
+        ss.otp_h = ""
+        return False, "Code expire ho gaya — naya code bhejein."
+    if int(ss.otp_try or 0) >= OTP_MAX_TRY:
+        ss.otp_h = ""
+        return False, "Bohat ghalat koshishein — naya code bhejein."
+    digits = re.sub(r"\D", "", str(entered or ""))
+    got = hashlib.sha256(digits.encode()).hexdigest()
+    if digits and hmac.compare_digest(got, str(ss.otp_h)):
+        return True, ""
+    ss.otp_try = int(ss.otp_try or 0) + 1
+    return False, ("Ghalat code. (" + str(max(OTP_MAX_TRY - int(ss.otp_try), 0))
+                   + " koshishein baqi)")
+
+
+def otp_reset():
+    ss.otp_h = ""
+    ss.otp_exp = 0.0
+    ss.otp_to = ""
+    ss.otp_try = 0
 
 
 def sign_out():
     ss.admin_ok = False
     ss.admin_who = ""
-    if google_user() is not None:
-        try:
-            st.logout()
-            return
-        except Exception:
-            pass
+    otp_reset()
     st.rerun()
 
 
@@ -102,7 +203,8 @@ def login_gate() -> bool:
     cfg = st.secrets.get("admin", {})
     want_u = cfg.get("username", "")
     want_h = cfg.get("password_sha256", "")
-    allow = allowed_emails()
+    ok_mail, why = otp_ready()
+    targets = otp_targets()
 
     st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
     _, m, _ = st.columns([1, 1.25, 1])
@@ -112,48 +214,84 @@ def login_gate() -> bool:
                     "<div class='brand-name'>Admin Portal</div></div><br>",
                     unsafe_allow_html=True)
 
-        # ---------------------------------------- A) Google / Gmail se sign-in
-        gu = google_user()
-        if gu is not None:
-            em = str(_claim(gu, "email", "") or "").strip().lower()
-            verified = _claim(gu, "email_verified", True)
-            if not allow:
-                # Allow-list khali = kisi ko andar na aane dein, warna har Gmail
-                # wala admin portal khol lega.
-                st.error("Google sign-in ho gaya, magar allow-list khali hai. "
-                         "Secrets mein ye add karein, phir dobara try karein:")
-                st.code('[admin]\nallowed_emails = ["' + (em or "aap@gmail.com") + '"]',
-                        language="toml")
-            elif em in allow and verified is not False:
-                ss.admin_ok = True
-                ss.admin_who = em
-                ss.tries = 0
-                st.rerun()
+        # ---------------------------------------- A) Gmail par login code
+        if not ok_mail:
+            st.warning("📧 Email code wala login abhi band hai — " + why)
+            with st.expander("📋 Secrets template — Manage app → Settings → Secrets",
+                             expanded=True):
+                st.code('[admin]\n'
+                        'username        = "admin"\n'
+                        'password_sha256 = "<sha256 hash>"\n'
+                        '# Login code sirf inhi addresses par jayega:\n'
+                        'allowed_emails  = ["aapkastore@gmail.com"]\n'
+                        '\n'
+                        '[email]\n'
+                        'enabled      = true\n'
+                        'host         = "smtp.gmail.com"\n'
+                        'port         = 587\n'
+                        'sender       = "aapkastore@gmail.com"\n'
+                        'app_password = "abcd efgh ijkl mnop"   # Gmail App Password\n'
+                        'sender_name  = "My Store"\n'
+                        'owner_email  = "aapkastore@gmail.com"\n', language="toml")
+                st.caption("**Gmail App Password:** Google Account → Security → "
+                           "2-Step Verification ON → App passwords → naya banayein. "
+                           "Normal Gmail password SMTP par kaam nahi karta.")
+        elif not ss.otp_h:
+            to = targets[0]
+            if len(targets) > 1:
+                masked = [_mask(x) for x in targets]
+                pick = st.selectbox("Code kis address par bhejein?", masked, index=0)
+                to = targets[masked.index(pick)]
             else:
-                st.error("**" + em + "** is admin portal ke liye allowed nahi hai.")
-            if st.button("Sign out / doosra account", use_container_width=True):
-                sign_out()
-            return False
-
-        if google_ready():
-            if st.button("🔓  Google / Gmail se sign in", type="primary",
+                st.markdown("<div class='kv'><span>📧 Login code is address par "
+                            "jayega</span><b>" + e(_mask(to)) + "</b></div>",
+                            unsafe_allow_html=True)
+            if st.button("📧  Login code bhejein", type="primary",
                          use_container_width=True):
-                if _google_section() is not None:
-                    st.login("google")          # [auth.google] wala form
-                else:
-                    st.login()                  # sab kuch seedha [auth] mein
-            st.caption("Sign-in ke baad Google aap ko site ke **home page** par wapas "
-                       "bhejta hai — wahan se dobara `/admin` khol lein, seedha andar "
-                       "aa jayenge.")
-            st.markdown("<div style='text-align:center;color:#94a3b8;margin:8px 0'>"
-                        "— ya —</div>", unsafe_allow_html=True)
+                with st.spinner("Code bhej rahe hain…"):
+                    ok, info = send_otp(to)
+                if ok:
+                    st.rerun()
+                st.error(info)
+            st.caption("Code sirf aap ke registered Gmail par jaata hai — is page se "
+                       "koi doosra address nahi diya ja sakta.")
+        else:
+            left = max(int(float(ss.otp_exp or 0) - time.time()), 0)
+            st.success("📧 Code **" + _mask(ss.otp_to) + "** par bhej diya gaya hai.")
+            with st.form("otpf"):
+                codein = st.text_input(str(OTP_LEN) + "-digit code", max_chars=12,
+                                       placeholder="123456")
+                if st.form_submit_button("🔓  Login", type="primary",
+                                         use_container_width=True):
+                    ok, info = check_otp(codein)
+                    if ok:
+                        ss.admin_ok = True
+                        ss.admin_who = ss.otp_to
+                        ss.tries = 0
+                        otp_reset()
+                        st.rerun()
+                    st.error(info)
+            st.caption("⏳ Code " + str(left // 60) + " min " + str(left % 60)
+                       + " sec tak valid hai. Email inbox mein na miley to **Spam / "
+                       "Promotions** bhi dekh lein.")
+            r1, r2 = st.columns(2)
+            if r1.button("🔁 Naya code", use_container_width=True):
+                ok, info = send_otp(ss.otp_to or (targets[0] if targets else ""))
+                (st.success if ok else st.error)(info)
+            if r2.button("✖️ Cancel", use_container_width=True):
+                otp_reset()
+                st.rerun()
 
         # ---------------------------------------- B) Username + password
-        box = st.expander("🔑 Password se login") if google_ready() else st.container()
+        if ok_mail:
+            st.markdown("<div style='text-align:center;color:#94a3b8;margin:8px 0'>"
+                        "— ya —</div>", unsafe_allow_html=True)
+        box = st.expander("🔑 Password se login") if ok_mail else st.container()
         with box:
             if not want_u or not want_h:
-                if google_ready():
-                    st.caption("Password login set nahi hai — sirf Google sign-in chalega.")
+                if ok_mail:
+                    st.caption("Password login set nahi hai — sirf email code se "
+                               "login hoga.")
                 else:
                     st.error("Admin credentials set nahi hain. Streamlit Cloud par "
                              "**Manage app → Settings → Secrets** mein ye daalein:")
@@ -768,6 +906,30 @@ with tabs[8]:
                    "khol kar wahan diya hua bot number apne contacts mein save karein, "
                    "us par WhatsApp se likhein: “I allow callmebot to send me messages”. "
                    "Jawab mein API key aa jayegi.")
+
+    st.divider()
+    section("🔐 Admin login", "Portal email code (OTP) se khulta hai")
+    _ok, _why = otp_ready()
+    if _ok:
+        st.success("✅ Login code in address par jaata hai: "
+                   + ", ".join("**" + _mask(x) + "**" for x in otp_targets()))
+    else:
+        st.warning("⚠️ " + _why)
+    st.caption("Naya admin add karna ho to Secrets ke `[admin] allowed_emails` mein "
+               "us ka Gmail likh dein (list khali ho to `[email] owner_email` wala "
+               "address use hota hai). Code " + str(OTP_LEN) + " digits ka hota hai, "
+               + str(OTP_TTL // 60) + " minute chalta hai, aur " + str(OTP_MAX_TRY)
+               + " ghalat koshishon ke baad khatam ho jaata hai.")
+    with st.expander("📋 Secrets template — [admin]"):
+        st.code('[admin]\n'
+                '# Email code login (asal login):\n'
+                'allowed_emails  = ["aapkastore@gmail.com"]\n'
+                '# Backup password login:\n'
+                'username        = "admin"\n'
+                'password_sha256 = "<sha256 hash>"\n', language="toml")
+        st.caption("Code bhejne ke liye upar wala `[email]` block hi use hota hai — "
+                   "yani jo Gmail wahan `sender`/`owner_email` mein hai, wohi code "
+                   "bhejta bhi hai. Google OAuth ki zaroorat nahi rahi.")
 
     st.divider()
     section("📣 Facebook / Share", "Link preview + Page par auto-post")
