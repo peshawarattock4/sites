@@ -1,4 +1,5 @@
 """Supabase data layer — saara DB access yahan se hota hai."""
+import re
 import uuid
 import datetime as dt
 import streamlit as st
@@ -34,6 +35,52 @@ def _safe(q: str) -> str:
     for ch in ",()%*":
         q = q.replace(ch, " ")
     return q.strip()
+
+
+# ------------------------------------------------- schema-tolerant write layer
+# Agar koi migration na chali ho to PostgREST kehta hai:
+#   PGRST204  "Could not find the 'courier' column of 'orders' in the schema cache"
+# Aisi surat mein poora order/product fail karne ke bajaye sirf wo column
+# nikaal kar dobara koshish karte hain — site chalti rehti hai.
+_MISSING_COL = re.compile(r"'([A-Za-z_][A-Za-z0-9_]*)' column", re.I)
+
+
+def _without_missing(data: dict, ex: Exception):
+    m = _MISSING_COL.search(str(ex))
+    if not m:
+        return None
+    col = m.group(1)
+    if col not in data:
+        return None
+    d = dict(data)
+    d.pop(col, None)
+    return d or None
+
+
+def _insert(table: str, data: dict, tries: int = 8):
+    d = dict(data)
+    for _ in range(tries):
+        try:
+            return sba().table(table).insert(d).execute()
+        except Exception as ex:
+            nd = _without_missing(d, ex)
+            if nd is None:
+                raise
+            d = nd
+    return sba().table(table).insert(d).execute()
+
+
+def _update(table: str, data: dict, key: str, val, tries: int = 8):
+    d = dict(data)
+    for _ in range(tries):
+        try:
+            return sba().table(table).update(d).eq(key, val).execute()
+        except Exception as ex:
+            nd = _without_missing(d, ex)
+            if nd is None:
+                raise
+            d = nd
+    return sba().table(table).update(d).eq(key, val).execute()
 
 
 # ------------------------------------------------------------------ settings
@@ -128,14 +175,21 @@ def enrich(p: dict) -> dict:
     p["images"] = [i for i in imgs if i][:5]
     p["cover"] = p["images"][0] if p["images"] else ""
     p["highlights"] = p.get("highlights") or []
+    # ---- admin-only cost fields (migration_03) — customer ko kahin nahi dikhte
+    p["cost_price"] = float(p.get("cost_price") or 0)   # kharid / purchase price
+    p["expense"] = float(p.get("expense") or 0)         # packing, ads, misc per unit
+    p["unit_cost"] = p["cost_price"] + p["expense"]
+    p["unit_profit"] = p["final_price"] - p["unit_cost"]
+    p["margin_pct"] = (int(round(p["unit_profit"] / p["final_price"] * 100))
+                       if p["final_price"] else 0)
     return p
 
 
 def save_product(payload: dict, pid: str | None = None):
     if pid:
-        sba().table("products").update(payload).eq("id", pid).execute()
+        _update("products", payload, "id", pid)
     else:
-        sba().table("products").insert(payload).execute()
+        _insert("products", payload)
     bust()
 
 
@@ -189,22 +243,14 @@ def create_order(payload: dict) -> dict:
     `42501 new row violates row-level security policy for table "orders"`
     phaink deta tha. Ye insert Streamlit ke server par chalta hai (browser mein
     key kabhi nahi jaati), is liye service key safe hai — chat_messages bhi
-    isi tarah kaam karta hai. Faida: customers ko `orders` par koi bhi
-    permission dene ki zaroorat nahi rehti.
+    isi tarah kaam karta hai.
     """
     data = {k: v for k, v in (payload or {}).items() if v is not None}
-    try:
-        res = sba().table("orders").insert(data).execute()
-    except Exception as ex:
-        # Purani DB mein `orders.email` column nahi hota
-        # (migration_02_email.sql). Sirf ek optional column ki wajah se order
-        # kabhi fail nahi hona chahiye -> usko hata kar dobara koshish.
-        if "email" in data and "email" in str(ex).lower():
-            data.pop("email", None)
-            res = sba().table("orders").insert(data).execute()
-        else:
-            raise
-    return (res.data or [{}])[0]
+    row = (_insert("orders", data).data or [{}])[0]
+    if row.get("id"):
+        add_order_event(row["id"], row.get("status") or "new", "Order receive ho gaya")
+    bust()
+    return row
 
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -215,9 +261,173 @@ def list_orders(status: str | None = None, limit: int = 300) -> list:
     return q.order("created_at", desc=True).limit(limit).execute().data or []
 
 
-def update_order_status(oid: str, status: str):
-    sba().table("orders").update({"status": status}).eq("id", oid).execute()
+def update_order_status(oid: str, status: str, note: str = "",
+                        courier: str = "", tracking_no: str = ""):
+    """Status + courier/tracking save karta hai aur tracking history mein ek
+    event likh deta hai — customer ko yehi timeline nazar aati hai."""
+    data = {"status": status,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if (note or "").strip():
+        data["status_note"] = note.strip()
+    if (courier or "").strip():
+        data["courier"] = courier.strip()
+    if (tracking_no or "").strip():
+        data["tracking_no"] = tracking_no.strip()
+    _update("orders", data, "id", oid)
+    add_order_event(oid, status, note)
     bust()
+
+
+# --------------------------------------------------------- tracking (customer)
+def add_order_event(order_id: str, status: str, note: str = ""):
+    """order_events table na bhi ho to order kabhi fail nahi hona chahiye."""
+    try:
+        _insert("order_events", {"order_id": order_id, "status": status,
+                                 "note": (note or "").strip() or None})
+    except Exception:
+        pass
+
+
+def get_order_events(order_id: str, limit: int = 40) -> list:
+    try:
+        return (sba().table("order_events").select("*")
+                .eq("order_id", order_id)
+                .order("created_at").limit(limit).execute().data or [])
+    except Exception:
+        return []
+
+
+def find_orders(phone: str, order_no: str = "", limit: int = 20) -> list:
+    """Customer apne mobile number se apne orders dekh sakta hai.
+
+    Read **service key** se hota hai (server-side), is liye `orders` par koi
+    public SELECT policy dene ki zaroorat nahi — kisi aur ka data leak nahi
+    hota. Number ke aakhri 10 digits par match karte hain taake 0300…,
+    +92300…, 92300… sab chal jayein.
+    """
+    tail = re.sub(r"\D", "", str(phone or ""))[-10:]
+    if len(tail) < 10:
+        return []
+    no = re.sub(r"\D", "", str(order_no or ""))
+    rows = []
+    try:
+        q = sba().table("orders").select("*")
+        if no:
+            try:
+                q = q.eq("order_no", int(no))
+            except ValueError:
+                pass
+        rows = (q.or_(f"phone.ilike.*{tail},whatsapp.ilike.*{tail}")
+                .order("created_at", desc=True).limit(limit).execute().data or [])
+    except Exception:
+        rows = []
+    if not rows:
+        rows = _scan_orders(tail, no, limit)
+    return rows
+
+
+def _scan_orders(tail: str, no: str = "", limit: int = 20, scan: int = 1500) -> list:
+    """Fallback: number dashes/spaces ke sath save hua ho to ilike match nahi
+    karta — is liye recent orders utha kar sirf digits compare karte hain."""
+    try:
+        rows = (sba().table("orders").select("*")
+                .order("created_at", desc=True).limit(scan).execute().data or [])
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        if no and re.sub(r"\D", "", str(r.get("order_no") or "")).lstrip("0") \
+                != no.lstrip("0"):
+            continue
+        for f in ("phone", "whatsapp"):
+            if tail in re.sub(r"\D", "", str(r.get(f) or "")):
+                out.append(r)
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ------------------------------------------------------- profit / loss (admin)
+@st.cache_data(ttl=20, show_spinner=False)
+def list_orders_range(start: str = "", end: str = "", statuses: tuple = (),
+                      limit: int = 5000) -> list:
+    q = sba().table("orders").select("*")
+    if start:
+        q = q.gte("created_at", start)
+    if end:
+        q = q.lte("created_at", end)
+    if statuses:
+        q = q.in_("status", list(statuses))
+    return q.order("created_at", desc=True).limit(limit).execute().data or []
+
+
+def order_profit(o: dict, cost_map: dict) -> dict:
+    """Ek order ka revenue / cost / profit.
+
+    Cost pehle order ke apne snapshot se (`items[].cost` + `items[].expense`,
+    jo checkout ke waqt save hoti hai) — is liye baad mein purchase price badle
+    to purani reports nahi badalti. Snapshot na ho to products table ki
+    current cost use hoti hai.
+    """
+    rev = cst = 0.0
+    lines, unknown = [], set()
+    for it in (o.get("items") or []):
+        qty = float(it.get("qty") or 0)
+        line_rev = float(it.get("line_total") or 0)
+        c, x = it.get("cost"), it.get("expense")
+        if c is None or x is None:
+            m = cost_map.get(it.get("product_id")) or {}
+            c = m.get("cost_price", 0.0) if c is None else c
+            x = m.get("expense", 0.0) if x is None else x
+        unit = float(c or 0) + float(x or 0)
+        if unit <= 0:
+            unknown.add(str(it.get("title") or "?"))
+        line_cost = unit * qty
+        rev += line_rev
+        cst += line_cost
+        lines.append({"product_id": it.get("product_id"),
+                      "title": str(it.get("title") or "?"), "qty": qty,
+                      "revenue": line_rev, "cost": line_cost,
+                      "profit": line_rev - line_cost})
+    return {"revenue": rev, "cost": cst, "profit": rev - cst,
+            "lines": lines, "unknown": unknown}
+
+
+def profit_report(start: str = "", end: str = "", statuses: tuple = ()) -> dict:
+    """Monthly aur per-product profit/loss. Delivery fee alag rakhi jaati hai
+    (wo courier ko chali jaati hai, is liye profit mein nahi ginte)."""
+    orders = list_orders_range(start, end, tuple(statuses))
+    cmap = {p["id"]: p for p in get_products(limit=1000, active_only=False)}
+    tot = {"orders": len(orders), "revenue": 0.0, "cost": 0.0, "profit": 0.0,
+           "delivery": 0.0, "margin": 0}
+    months, prods, no_cost = {}, {}, set()
+    for o in orders:
+        r = order_profit(o, cmap)
+        tot["revenue"] += r["revenue"]
+        tot["cost"] += r["cost"]
+        tot["profit"] += r["profit"]
+        tot["delivery"] += float(o.get("delivery_fee") or 0)
+        no_cost |= r["unknown"]
+        mk = str(o.get("created_at") or "")[:7] or "—"
+        m = months.setdefault(mk, {"month": mk, "orders": 0, "revenue": 0.0,
+                                   "cost": 0.0, "profit": 0.0})
+        m["orders"] += 1
+        for k in ("revenue", "cost", "profit"):
+            m[k] += r[k]
+        for ln in r["lines"]:
+            key = ln["product_id"] or ln["title"]
+            d = prods.setdefault(key, {"title": ln["title"], "qty": 0.0,
+                                       "revenue": 0.0, "cost": 0.0, "profit": 0.0})
+            d["qty"] += ln["qty"]
+            for k in ("revenue", "cost", "profit"):
+                d[k] += ln[k]
+    if tot["revenue"]:
+        tot["margin"] = int(round(tot["profit"] / tot["revenue"] * 100))
+    return {"totals": tot,
+            "months": sorted(months.values(), key=lambda x: x["month"], reverse=True),
+            "products": sorted(prods.values(), key=lambda x: x["profit"], reverse=True),
+            "no_cost": sorted(no_cost)}
 
 
 # ------------------------------------------------------------------ live chat
