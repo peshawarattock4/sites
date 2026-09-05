@@ -15,7 +15,7 @@ def _client(key_name: str) -> Client:
 
 
 def sb() -> Client:
-    """Public (anon) client — sirf active catalog read + order insert."""
+    """Public (anon) client — sirf active catalog / settings read."""
     return _client("SUPABASE_ANON_KEY")
 
 
@@ -180,7 +180,30 @@ def upload_image(file, folder: str = "products") -> str:
 
 # ------------------------------------------------------------------ orders
 def create_order(payload: dict) -> dict:
-    res = sb().table("orders").insert(payload).execute()
+    """Order insert **service_role** (sba) se hota hai, anon se nahi.
+
+    Wajah: `orders` par anon ki sirf INSERT policy hai, SELECT ki nahi. Magar
+    PostgREST default `Prefer: return=representation` bhejta hai, yani
+    `insert ... returning *` — aur RETURNING ke liye SELECT policy bhi chahiye
+    hoti hai. Is liye anon client
+    `42501 new row violates row-level security policy for table "orders"`
+    phaink deta tha. Ye insert Streamlit ke server par chalta hai (browser mein
+    key kabhi nahi jaati), is liye service key safe hai — chat_messages bhi
+    isi tarah kaam karta hai. Faida: customers ko `orders` par koi bhi
+    permission dene ki zaroorat nahi rehti.
+    """
+    data = {k: v for k, v in (payload or {}).items() if v is not None}
+    try:
+        res = sba().table("orders").insert(data).execute()
+    except Exception as ex:
+        # Purani DB mein `orders.email` column nahi hota
+        # (migration_02_email.sql). Sirf ek optional column ki wajah se order
+        # kabhi fail nahi hona chahiye -> usko hata kar dobara koshish.
+        if "email" in data and "email" in str(ex).lower():
+            data.pop("email", None)
+            res = sba().table("orders").insert(data).execute()
+        else:
+            raise
     return (res.data or [{}])[0]
 
 
