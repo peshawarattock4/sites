@@ -37,6 +37,10 @@ ss.setdefault("cwa", "")
 ss.setdefault("order", None)
 ss.setdefault("wa_ping", 0.0)
 ss.setdefault("deep_done", False)
+ss.setdefault("tk_phone", "")      # order tracking — customer ka number
+ss.setdefault("tk_no", "")
+ss.setdefault("tk_done", False)
+ss.setdefault("tk_hits", 0)        # chhota rate limit (random numbers na daale koi)
 
 
 # ------------------------------------------------------------------ deep link
@@ -73,7 +77,12 @@ def cart_items():
             continue
         out.append({"product_id": pid, "title": p["title"], "price": p["final_price"],
                     "qty": int(qty), "image": p["cover"],
-                    "line_total": p["final_price"] * int(qty)})
+                    "line_total": p["final_price"] * int(qty),
+                    # cost snapshot — sirf order ke andar (admin profit report ke
+                    # liye). Customer ko kahin dikhta nahi. Baad mein purchase
+                    # price badle to purani reports ghalat na hon.
+                    "cost": float(p.get("cost_price") or 0),
+                    "expense": float(p.get("expense") or 0)})
     return out
 
 
@@ -106,7 +115,8 @@ def ping_owner(text: str):
 # ------------------------------------------------------------------ header
 def header():
     announcement(S.get("announcement", ""))
-    c1, c2, c3, c4 = st.columns([3.4, 4.6, 1.1, 1.1], vertical_alignment="center")
+    c1, c2, c3, c4, c5 = st.columns([3.1, 4.0, 1.25, 1.05, 1.05],
+                                    vertical_alignment="center")
     with c1:
         st.markdown(
             f"<div class='brand'><div class='brand-logo'>🛍️</div><div>"
@@ -118,10 +128,13 @@ def header():
                       placeholder="🔍  Product search karein… (naam, category, offer)",
                       on_change=lambda: (ss.update(q=ss.sbox, view="home", pid=None)))
     with c3:
+        if st.button("📦 Track order", use_container_width=True, key="htrack"):
+            go("track")
+    with c4:
         n = sum(int(v) for v in ss.cart.values())
         if st.button(f"🛒 {n}", use_container_width=True, key="hcart"):
             go("cart")
-    with c4:
+    with c5:
         if st.button("💬 Chat", use_container_width=True, key="hchat"):
             go("chat")
 
@@ -361,7 +374,8 @@ def view_checkout():
             sent = {"error": (False, str(ex))}
 
     ss.order = {"no": payload["order_no"], "name": name, "total": tot,
-                "items": items, "email": mail_v, "sent": sent}
+                "items": items, "email": mail_v, "sent": sent,
+                "phone": phone.strip()}
     ss.cart = {}
     go("thanks")
 
@@ -384,8 +398,148 @@ def view_thanks():
         st.markdown(f"<a class='wa' style='position:static;display:inline-flex' "
                     f"href='{wa_link(S['owner_whatsapp'], msg)}' target='_blank'>"
                     f"💬 Order details WhatsApp par bhejein</a>", unsafe_allow_html=True)
-    if st.button("🏠 Home", type="primary"):
+    t1, t2 = st.columns(2)
+    if t1.button("📦 Order track karein", use_container_width=True):
+        go("track", tk_phone=str(o.get("phone") or ""),
+           tk_no=str(o.get("no") or ""), tk_done=True, order=None)
+    if t2.button("🏠 Home", type="primary", use_container_width=True):
         go("home", order=None)
+
+
+# ------------------------------------------------------------------ tracking
+TRACK_STEPS = [("new", "🧾", "Order mila"), ("confirmed", "✅", "Confirm hua"),
+               ("shipped", "🚚", "Raaste mein"), ("delivered", "📬", "Deliver")]
+
+
+def track_bar(status: str) -> str:
+    """Chhota progress bar — poora inline CSS, styles.py chherne ki zaroorat nahi."""
+    if status == "cancelled":
+        return ("<div style='background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;"
+                "padding:10px 12px;border-radius:12px;font-weight:700;margin:6px 0 10px'>"
+                "❌ Ye order cancel ho gaya hai</div>")
+    idx = next((i for i, s in enumerate(TRACK_STEPS) if s[0] == status), 0)
+    fill = int(idx / (len(TRACK_STEPS) - 1) * 100)
+    cells = []
+    for i, (_, ic, lab) in enumerate(TRACK_STEPS):
+        done = i <= idx
+        dot_bg = "#4338ca" if done else "#e2e8f0"
+        dot_fg = "#ffffff" if done else "#94a3b8"
+        txt = "#1e293b" if done else "#94a3b8"
+        cells.append(
+            "<div style='flex:1;text-align:center;position:relative;z-index:1'>"
+            "<div style='width:34px;height:34px;margin:0 auto;border-radius:50%;"
+            "display:flex;align-items:center;justify-content:center;font-size:1rem;"
+            "background:" + dot_bg + ";color:" + dot_fg + "'>" + ic + "</div>"
+            "<div style='font-size:.72rem;margin-top:5px;font-weight:600;color:"
+            + txt + "'>" + lab + "</div></div>")
+    rail = ("<div style='position:absolute;top:17px;left:12.5%;right:12.5%;height:3px;"
+            "background:#e2e8f0;border-radius:3px'></div>"
+            "<div style='position:absolute;top:17px;left:12.5%;width:calc(75% * "
+            + str(fill) + " / 100);height:3px;background:#4338ca;border-radius:3px'></div>")
+    return ("<div style='position:relative;display:flex;align-items:flex-start;"
+            "margin:8px 0 12px'>" + rail + "".join(cells) + "</div>")
+
+
+def mask_addr(txt: str, keep: int = 14) -> str:
+    """Address adhoora dikhate hain — koi random number daal kar kisi ka poora
+    pata na nikaal sakay."""
+    t = str(txt or "").strip()
+    return t if len(t) <= keep else t[:keep] + "…"
+
+
+def track_card(o: dict):
+    stt = str(o.get("status") or "new")
+    when = str(o.get("created_at") or "")[:16].replace("T", " ")
+    head = ("#" + str(o.get("order_no")) + "  •  " + money(o.get("total"), CUR)
+            + "  •  " + stt.upper() + "  •  " + when)
+    with st.expander(head, expanded=True):
+        st.markdown(track_bar(stt), unsafe_allow_html=True)
+        note = (o.get("status_note") or "").strip()
+        if note:
+            st.info("📢 " + note)
+        if (o.get("courier") or "").strip() or (o.get("tracking_no") or "").strip():
+            st.markdown("<div class='kv'><span>🚚 Courier</span><b>"
+                        + e(o.get("courier") or "—") + "</b></div>",
+                        unsafe_allow_html=True)
+            if (o.get("tracking_no") or "").strip():
+                st.caption("🔢 Courier tracking number — courier ki website par "
+                           "ye number daal kar bhi dekh sakte hain:")
+                st.code(str(o.get("tracking_no")).strip(), language="text")
+        rows = ""
+        for it in (o.get("items") or []):
+            rows += ("<div class='kv'><span>" + e(it.get("title")) + " × "
+                     + str(int(it.get("qty") or 1)) + "</span><b>"
+                     + money(it.get("line_total"), CUR) + "</b></div>")
+        fee = float(o.get("delivery_fee") or 0)
+        rows += ("<div class='kv'><span>Delivery</span><b>"
+                 + ("FREE" if fee == 0 else money(fee, CUR)) + "</b></div>"
+                 "<div class='kv'><span>Total (COD)</span><span class='tot'>"
+                 + money(o.get("total"), CUR) + "</span></div>")
+        st.markdown(rows, unsafe_allow_html=True)
+        st.caption("🏙️ " + e(o.get("city") or "—") + "  •  📍 "
+                   + e(mask_addr(o.get("address")))
+                   + "  •  privacy ke liye address adhoora dikhaya gaya hai")
+        ev = db.get_order_events(o.get("id"))
+        if ev:
+            st.markdown("**📜 Order history**")
+            hist = ""
+            for x in ev:
+                t = str(x.get("created_at") or "")[:16].replace("T", " ")
+                extra = (" — " + e(x.get("note"))) if (x.get("note") or "").strip() else ""
+                hist += ("<div class='hl'>🕒 " + e(t) + " — <b>"
+                         + e(str(x.get("status") or "").upper()) + "</b>" + extra + "</div>")
+            st.markdown(hist, unsafe_allow_html=True)
+        if S.get("owner_whatsapp"):
+            ask = ("Assalam-o-Alaikum! Mera order #" + str(o.get("order_no"))
+                   + " ki status kya hai?")
+            st.markdown("<a class='wa' style='position:static;display:inline-flex' "
+                        "href='" + wa_link(S["owner_whatsapp"], ask) + "' target='_blank'>"
+                        "💬 Is order ke baare mein poochein</a>", unsafe_allow_html=True)
+
+
+def view_track():
+    section("📦 Order Tracking",
+            "Wohi mobile number daalein jo order karte waqt diya tha")
+    with st.form("tkf"):
+        c1, c2 = st.columns([1.7, 1])
+        ph = c1.text_input("Mobile / WhatsApp number *", ss.tk_phone,
+                           placeholder="03001234567")
+        no = c2.text_input("Order number (optional)", ss.tk_no, placeholder="1005")
+        hit = st.form_submit_button("🔍 Track karein", type="primary",
+                                    use_container_width=True)
+    b1, b2 = st.columns(2)
+    if b1.button("🔄 Status refresh karein", use_container_width=True,
+                 disabled=not ss.tk_done):
+        st.rerun()
+    if b2.button("← Home", use_container_width=True):
+        go("home")
+
+    if hit:
+        ss.tk_phone, ss.tk_no, ss.tk_done = ph.strip(), no.strip(), True
+        ss.tk_hits = int(ss.tk_hits or 0) + 1
+
+    if not ss.tk_done:
+        st.info("Number daal kar **Track karein** dabayein — order ki live status, "
+                "courier aur tracking number sab yahin nazar aa jayega. Admin jab "
+                "status update karta hai, wo turant yahan dikhta hai.")
+        return
+    if int(ss.tk_hits or 0) > 15:
+        st.error("Bohat zyada koshishein ho gayi hain. Page reload karke dobara "
+                 "try karein.")
+        return
+    if len(re.sub(r"\D", "", ss.tk_phone)) < 10:
+        st.error("Poora mobile number likhein — jaise 03001234567.")
+        return
+
+    with st.spinner("Aap ke orders dhoond rahe hain…"):
+        rows = db.find_orders(ss.tk_phone, ss.tk_no)
+    if not rows:
+        empty("Is number par koi order nahi mila. Wohi number likhein jo order ke "
+              "waqt diya tha, ya order number ke sath try karein.")
+        return
+    st.caption("✅ " + str(len(rows)) + " order mile — sab se naya sab se upar")
+    for o in rows:
+        track_card(o)
 
 
 def view_chat():
@@ -423,7 +577,8 @@ def view_chat():
 # ------------------------------------------------------------------ router
 header()
 {"home": view_home, "product": view_product, "cart": view_cart,
- "checkout": view_checkout, "thanks": view_thanks, "chat": view_chat
+ "checkout": view_checkout, "thanks": view_thanks, "chat": view_chat,
+ "track": view_track
  }.get(ss.view, view_home)()
 
 if ss.view != "chat":
