@@ -1,3 +1,4 @@
+import datetime as dt
 import re
 import time
 import uuid
@@ -112,33 +113,125 @@ def ping_owner(text: str):
         pass
 
 
+# ------------------------------------------------------- animated hero header
+# Sab kuch pure CSS hai — koi JavaScript nahi, koi st.rerun nahi, is liye site
+# bilkul halki rehti hai. Naam word-by-word aata hai, categories rotate karti
+# hain aur background ka gradient apne aap rang badalta rehta hai.
+HERO_CSS = """
+<style>
+.heroband{position:relative;overflow:hidden;border-radius:22px;
+  padding:34px 22px 26px;margin:4px 0 16px;
+  background:linear-gradient(120deg,#1e1b4b,#312e81,#4338ca,#6d28d9,#4338ca,#1e1b4b);
+  background-size:340% 340%;animation:hbg 22s ease infinite;
+  box-shadow:0 20px 46px -20px rgba(49,46,129,.85)}
+@keyframes hbg{0%{background-position:0% 50%}50%{background-position:100% 50%}
+  100%{background-position:0% 50%}}
+.heroband:before,.heroband:after{content:"";position:absolute;border-radius:50%;
+  filter:blur(48px);opacity:.45;pointer-events:none}
+.heroband:before{width:280px;height:280px;top:-130px;left:-70px;
+  background:radial-gradient(circle,#a78bfa,transparent 70%);
+  animation:hfl1 16s ease-in-out infinite}
+.heroband:after{width:330px;height:330px;bottom:-170px;right:-90px;
+  background:radial-gradient(circle,#38bdf8,transparent 70%);
+  animation:hfl2 19s ease-in-out infinite}
+@keyframes hfl1{0%,100%{transform:translate(0,0)}50%{transform:translate(42px,28px)}}
+@keyframes hfl2{0%,100%{transform:translate(0,0)}50%{transform:translate(-48px,-24px)}}
+.hin{position:relative;z-index:2;text-align:center}
+.hname{margin:0;color:#fff;font-weight:900;line-height:1.03;letter-spacing:-.025em;
+  font-size:clamp(2rem,6.4vw,4.3rem);text-shadow:0 8px 30px rgba(0,0,0,.32)}
+.hw{display:inline-block;opacity:0;animation:hwin .85s cubic-bezier(.2,.9,.25,1) both}
+@keyframes hwin{0%{opacity:0;transform:translateY(30px) scale(.85) rotate(-4deg);
+  filter:blur(8px)}60%{opacity:1}100%{opacity:1;transform:none;filter:none}}
+.htag{margin:9px 0 0;color:#e0e7ff;font-weight:600;
+  font-size:clamp(.86rem,1.9vw,1.06rem);opacity:0;
+  animation:hfade .9s ease .5s both}
+@keyframes hfade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.hrot{position:relative;height:40px;margin:14px 0 2px}
+.hrot>span{position:absolute;left:0;right:0;top:0;opacity:0}
+.hrot b{display:inline-block;font-weight:800;color:#fff;
+  font-size:clamp(.82rem,2vw,1rem);background:rgba(255,255,255,.17);
+  border:1px solid rgba(255,255,255,.3);padding:7px 17px;border-radius:999px}
+.hbar{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:10px;
+  opacity:0;animation:hfade .9s ease .75s both}
+.hbar i{font-style:normal;font-size:.76rem;font-weight:700;color:#1e1b4b;
+  background:#fff;padding:5px 12px;border-radius:999px;white-space:nowrap}
+@media (max-width:640px){.heroband{padding:26px 14px 20px;border-radius:18px}
+  .hrot{height:36px}}
+@media (prefers-reduced-motion:reduce){
+  .heroband,.heroband:before,.heroband:after,.hw,.htag,.hbar{
+    animation:none!important;opacity:1!important}
+  .hrot>span{animation:none!important;opacity:0!important}
+  .hrot>span:first-child{opacity:1!important}}
+</style>
+"""
+
+
+def hero_head(cats):
+    """Bara animated banner jis mein store ka naam word-by-word aata hai aur
+    categories ek ke baad ek rotate hoti rehti hain."""
+    words = [w for w in str(S["shop_name"] or "Shop").split() if w] or ["Shop"]
+    ws = ""
+    for i, w in enumerate(words):
+        ws += ("<span class='hw' style='animation-delay:"
+               + str(round(0.15 * i, 2)) + "s'>" + e(w) + "</span> ")
+
+    labels = [(str(c.get("icon") or "🛍️") + " " + str(c.get("name") or "")).strip()
+              for c in (cats or []) if str(c.get("name") or "").strip()][:8]
+    labels = labels or ["🛍️ Naye products", "🔥 Sale & Offers", "🚚 Cash on Delivery"]
+    n = len(labels)
+    per = 2.4                                  # ek category kitni dair dikhe
+    f = 100.0 / n                              # cycle ka uska hissa
+    kf = ("<style>@keyframes rotcyc{0%{opacity:0;transform:translateY(12px)}"
+          + str(round(f * .12, 3)) + "%{opacity:1;transform:none}"
+          + str(round(f * .86, 3)) + "%{opacity:1;transform:none}"
+          + str(round(f, 3)) + "%{opacity:0;transform:translateY(-12px)}"
+          "100%{opacity:0;transform:translateY(-12px)}}"
+          ".hrot>span{animation:rotcyc " + str(round(n * per, 2))
+          + "s linear infinite}</style>")
+    rot = ""
+    for i, lab in enumerate(labels):
+        rot += ("<span style='animation-delay:" + str(round(per * i, 2))
+                + "s'><b>" + e(lab) + "</b></span>")
+
+    pills = ["🇵🇰 Poore Pakistan mein delivery", "💵 Cash on Delivery"]
+    if FREE_OVER:
+        pills.append("🚚 " + money(FREE_OVER, CUR) + " se upar free delivery")
+    elif DELIV:
+        pills.append("🚚 Delivery " + money(DELIV, CUR))
+    bar = "".join("<i>" + e(x) + "</i>" for x in pills)
+    tag = str(SHOP.get("tagline", "") or "").strip()
+
+    st.markdown(
+        HERO_CSS + kf + "<div class='heroband'><div class='hin'>"
+        "<h1 class='hname'>" + ws + "</h1>"
+        + ("<p class='htag'>" + e(tag) + "</p>" if tag else "")
+        + "<div class='hrot'>" + rot + "</div>"
+        + "<div class='hbar'>" + bar + "</div></div></div>",
+        unsafe_allow_html=True)
+
+
 # ------------------------------------------------------------------ header
 def header():
     announcement(S.get("announcement", ""))
-    c1, c2, c3, c4, c5 = st.columns([3.1, 4.0, 1.25, 1.05, 1.05],
-                                    vertical_alignment="center")
+    cats = db.get_categories()
+    hero_head(cats)
+
+    c1, c2, c3, c4 = st.columns([4.3, 1.35, 1.0, 1.0], vertical_alignment="center")
     with c1:
-        st.markdown(
-            f"<div class='brand'><div class='brand-logo'>🛍️</div><div>"
-            f"<div class='brand-name'>{e(S['shop_name'])}</div>"
-            f"<div class='brand-tag'>{e(SHOP.get('tagline',''))}</div></div></div>",
-            unsafe_allow_html=True)
-    with c2:
         st.text_input("s", value=ss.q, key="sbox", label_visibility="collapsed",
                       placeholder="🔍  Product search karein… (naam, category, offer)",
                       on_change=lambda: (ss.update(q=ss.sbox, view="home", pid=None)))
-    with c3:
+    with c2:
         if st.button("📦 Track order", use_container_width=True, key="htrack"):
             go("track")
-    with c4:
+    with c3:
         n = sum(int(v) for v in ss.cart.values())
         if st.button(f"🛒 {n}", use_container_width=True, key="hcart"):
             go("cart")
-    with c5:
+    with c4:
         if st.button("💬 Chat", use_container_width=True, key="hchat"):
             go("chat")
 
-    cats = db.get_categories()
     labels = ["🏠 All"] + [f"{c.get('icon') or '🛍️'} {c['name']}" for c in cats]
     ids = [None] + [c["id"] for c in cats]
     per = 6
@@ -150,6 +243,31 @@ def header():
                           type="primary" if active else "secondary"):
                 go("home", cat=cid, pid=None)
     st.divider()
+
+
+# ------------------------------------------------------------------ footer
+FOOT_CSS = """
+<style>
+.ftr{margin:38px 0 0;padding:24px 14px 64px;border-top:1px solid #e2e8f0;
+  text-align:center}
+.ftr .f1{font-weight:800;color:#1e293b;font-size:1rem}
+.ftr .f2{color:#475569;font-size:.92rem;margin-top:7px}
+.ftr .f3{color:#94a3b8;font-size:.82rem;margin-top:11px}
+.fhrt{display:inline-block;color:#e11d48;animation:fbeat 1.5s ease-in-out infinite}
+@keyframes fbeat{0%,100%{transform:scale(1)}45%{transform:scale(1.28)}}
+@media (prefers-reduced-motion:reduce){.fhrt{animation:none}}
+</style>
+"""
+
+
+def footer_bar():
+    st.markdown(
+        FOOT_CSS + "<div class='ftr'>"
+        "<div class='f1'>🚚 We deliver only across Pakistan</div>"
+        "<div class='f2'>Made with <span class='fhrt'>❤️</span> for our customers"
+        "</div><div class='f3'>© " + str(dt.date.today().year) + " "
+        + e(S["shop_name"]) + " — All Rights Reserved.</div></div>",
+        unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------ grid
@@ -580,6 +698,8 @@ header()
  "checkout": view_checkout, "thanks": view_thanks, "chat": view_chat,
  "track": view_track
  }.get(ss.view, view_home)()
+
+footer_bar()
 
 if ss.view != "chat":
     wa_float(S.get("owner_whatsapp", ""), S["shop_name"])
