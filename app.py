@@ -289,8 +289,6 @@ def view_home():
         label = f"“{ss.q}”" if ss.q else "Category"
         section(f"🔎 Search results — {label}", f"{len(res)} products")
         grid(res, "res")
-        
-        # FIX: on_click callback taake sbox aur variables properly clear hon 
         st.button("← Clear filter", on_click=lambda: ss.update(q="", cat=None, sbox="", view="home", pid=None))
         return
 
@@ -361,6 +359,11 @@ def view_product():
     if p.get("description"):
         section("📝 Description")
         st.write(p["description"])
+        
+    if p.get("video_url"):
+        section("🎥 Product Video")
+        st.video(p["video_url"])
+
     rel = [x for x in db.get_products(category_id=p.get("category_id"), limit=5)
            if x["id"] != p["id"]][:4]
     if rel:
@@ -417,8 +420,7 @@ def view_checkout():
         phone = c1.text_input("Phone Number *", placeholder="03001234567")
         wa = c2.text_input("WhatsApp Number *", placeholder="03001234567")
         mail = st.text_input("Email " + ("*" if EMAIL_REQUIRED else "(optional)"),
-                             placeholder="aapka@gmail.com",
-                             help="Order ki confirmation isi email par bhej denge.")
+                             placeholder="aapka@gmail.com")
         addr = st.text_area("Complete Delivery Address *", height=90,
                             placeholder="House #, Street, Area, Landmark…")
         note = st.text_input("Order note (optional)")
