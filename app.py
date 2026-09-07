@@ -20,9 +20,7 @@ CUR = SHOP.get("currency", "Rs")
 DELIV = float(S.get("delivery_fee") or 0)
 FREE_OVER = float(S.get("free_over") or 0)
 
-# Checkout par email zaroori banana ho to ise True kar dein — bas itna hi kaafi hai.
 EMAIL_REQUIRED = False
-# Ek hi chat session mein owner ko dobara WhatsApp alert kitni dair baad jaye (seconds)
 CHAT_ALERT_GAP = 300
 
 ss = st.session_state
@@ -30,7 +28,7 @@ ss.setdefault("view", "home")
 ss.setdefault("cart", {})
 ss.setdefault("cat", None)
 ss.setdefault("q", "")
-ss.setdefault("sbox", "")          # Clear filter ko chalane ke liye iski default value yahan set ki hai
+ss.setdefault("sbox", "")
 ss.setdefault("pid", None)
 ss.setdefault("img_i", 0)
 ss.setdefault("sid", uuid.uuid4().hex[:14])
@@ -39,15 +37,13 @@ ss.setdefault("cwa", "")
 ss.setdefault("order", None)
 ss.setdefault("wa_ping", 0.0)
 ss.setdefault("deep_done", False)
-ss.setdefault("tk_phone", "")      # order tracking — customer ka number
+ss.setdefault("tk_phone", "")
 ss.setdefault("tk_no", "")
 ss.setdefault("tk_done", False)
-ss.setdefault("tk_hits", 0)        # chhota rate limit (random numbers na daale koi)
+ss.setdefault("tk_hits", 0)
 
 
 # ------------------------------------------------------------------ deep link
-# Facebook / WhatsApp se aane wala link:  https://<site>/?p=<product-id>
-# Sirf PARHTE hain, URL likhte nahi — is liye koi rerun loop nahi banta.
 if not ss.deep_done:
     ss.deep_done = True
     try:
@@ -59,7 +55,7 @@ if not ss.deep_done:
             if db.get_product(_pid):
                 ss.view, ss.pid = "product", _pid
         except Exception:
-            pass                       # ghalat/purana id — chup-chaap home page
+            pass
 
 
 # ------------------------------------------------------------------ helpers
@@ -80,9 +76,6 @@ def cart_items():
         out.append({"product_id": pid, "title": p["title"], "price": p["final_price"],
                     "qty": int(qty), "image": p["cover"],
                     "line_total": p["final_price"] * int(qty),
-                    # cost snapshot — sirf order ke andar (admin profit report ke
-                    # liye). Customer ko kahin dikhta nahi. Baad mein purchase
-                    # price badle to purani reports ghalat na hon.
                     "cost": float(p.get("cost_price") or 0),
                     "expense": float(p.get("expense") or 0)})
     return out
@@ -103,7 +96,6 @@ def add_to_cart(p, qty=1):
 
 
 def ping_owner(text: str):
-    """Naye chat message par owner ko WhatsApp alert — background, throttled."""
     now = time.time()
     if now - float(ss.wa_ping or 0) < CHAT_ALERT_GAP:
         return
@@ -115,9 +107,6 @@ def ping_owner(text: str):
 
 
 # ------------------------------------------------------- animated hero header
-# Sab kuch pure CSS hai — koi JavaScript nahi, koi st.rerun nahi, is liye site
-# bilkul halki rehti hai. Naam word-by-word aata hai, categories rotate karti
-# hain aur background ka gradient apne aap rang badalta rehta hai.
 HERO_CSS = """
 <style>
 .heroband{position:relative;overflow:hidden;border-radius:22px;
@@ -168,8 +157,6 @@ HERO_CSS = """
 
 
 def hero_head(cats):
-    """Bara animated banner jis mein store ka naam word-by-word aata hai aur
-    categories ek ke baad ek rotate hoti rehti hain."""
     words = [w for w in str(S["shop_name"] or "Shop").split() if w] or ["Shop"]
     ws = ""
     for i, w in enumerate(words):
@@ -180,8 +167,8 @@ def hero_head(cats):
               for c in (cats or []) if str(c.get("name") or "").strip()][:8]
     labels = labels or ["🛍️ Naye products", "🔥 Sale & Offers", "🚚 Cash on Delivery"]
     n = len(labels)
-    per = 2.4                                  # ek category kitni dair dikhe
-    f = 100.0 / n                              # cycle ka uska hissa
+    per = 2.4
+    f = 100.0 / n
     kf = ("<style>@keyframes rotcyc{0%{opacity:0;transform:translateY(12px)}"
           + str(round(f * .12, 3)) + "%{opacity:1;transform:none}"
           + str(round(f * .86, 3)) + "%{opacity:1;transform:none}"
@@ -219,7 +206,6 @@ def header():
 
     c1, c2, c3, c4 = st.columns([4.3, 1.35, 1.0, 1.0], vertical_alignment="center")
     with c1:
-        # Yahan se 'value=ss.q' hata diya gaya hai taake programmatic clearing sahi se kaam kare
         st.text_input("s", key="sbox", label_visibility="collapsed",
                       placeholder="🔍  Product search karein… (naam, category, offer)",
                       on_change=lambda: (ss.update(q=ss.sbox, view="home", pid=None)))
@@ -303,8 +289,9 @@ def view_home():
         label = f"“{ss.q}”" if ss.q else "Category"
         section(f"🔎 Search results — {label}", f"{len(res)} products")
         grid(res, "res")
-        if st.button("← Clear filter"):
-            go("home", q="", cat=None, sbox="")
+        
+        # FIX: on_click callback taake sbox aur variables properly clear hon 
+        st.button("← Clear filter", on_click=lambda: ss.update(q="", cat=None, sbox="", view="home", pid=None))
         return
 
     if sale:
@@ -481,7 +468,6 @@ def view_checkout():
         try:
             row = db.create_order(payload)
         except Exception as ex:
-            # `email` column DB mein na ho to order phir bhi na rukay
             if "email" not in str(ex).lower():
                 raise
             row = db.create_order({k: v for k, v in payload.items() if k != "email"})
@@ -490,7 +476,7 @@ def view_checkout():
         payload["order_no"] = row.get("order_no", "—")
         try:
             sent = notify.notify_new_order(payload, items, CUR, S["shop_name"], sub, fee)
-        except Exception as ex:                 # notification kabhi order na rokay
+        except Exception as ex:
             sent = {"error": (False, str(ex))}
 
     ss.order = {"no": payload["order_no"], "name": name, "total": tot,
@@ -532,7 +518,6 @@ TRACK_STEPS = [("new", "🧾", "Order mila"), ("confirmed", "✅", "Confirm hua"
 
 
 def track_bar(status: str) -> str:
-    """Chhota progress bar — poora inline CSS, styles.py chherne ki zaroorat nahi."""
     if status == "cancelled":
         return ("<div style='background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;"
                 "padding:10px 12px;border-radius:12px;font-weight:700;margin:6px 0 10px'>"
@@ -561,8 +546,6 @@ def track_bar(status: str) -> str:
 
 
 def mask_addr(txt: str, keep: int = 14) -> str:
-    """Address adhoora dikhate hain — koi random number daal kar kisi ka poora
-    pata na nikaal sakay."""
     t = str(txt or "").strip()
     return t if len(t) <= keep else t[:keep] + "…"
 
