@@ -525,29 +525,30 @@ with tabs[2]:
 
 # ================================================================== BANNERS
 with tabs[3]:
-    st.info("Sale/Offer banners **automatic** ban jaate hain un products se jin par "
-            "sale price ya offer text hai. Neeche sirf extra custom banner add karein.")
+    st.info("Sale/Offer banners **automatic** ban jaate hain. Neeche custom banner add karein.")
     a, b = st.columns([1, 1.2], gap="large")
     with a:
         with st.form("nb", clear_on_submit=True):
             t = st.text_input("Banner title")
             s = st.text_input("Subtitle")
             f = st.file_uploader("Banner image", type=["png", "jpg", "jpeg", "webp"])
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             g1 = c1.color_picker("Gradient from", "#1e1b4b")
             g2 = c2.color_picker("Gradient to", "#4338ca")
-            if st.form_submit_button("💾 Add banner", type="primary",
-                                     use_container_width=True):
+            tc = c3.color_picker("Text Color", "#ffffff") # Naya Font Color Picker
+            
+            if st.form_submit_button("💾 Add banner", type="primary", use_container_width=True):
                 url = db.upload_image(f, "banners") if f else None
                 db.save_banner({"title": t.strip(), "subtitle": s.strip(),
                                 "image_url": url, "bg_from": g1, "bg_to": g2,
+                                "text_color": tc,  # Naya Font Color Save Hoga
                                 "is_active": True})
                 st.success("Banner live.")
                 st.rerun()
     with b:
         for bn in db.get_banners(active_only=False):
             r = st.columns([3, 0.8], vertical_alignment="center")
-            r[0].markdown(f"**{e(bn.get('title'))}** — {e(bn.get('subtitle'))}")
+            r[0].markdown(f"<b style='color:{bn.get('text_color', '#000')}'>{e(bn.get('title'))}</b> — {e(bn.get('subtitle'))}", unsafe_allow_html=True)
             if r[1].button("🗑", key=f"db{bn['id']}"):
                 db.delete_banner(bn["id"])
                 st.rerun()
