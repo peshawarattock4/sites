@@ -621,6 +621,66 @@ with tabs[4]:
                         + " " + str(x.get("status") or "").upper()
                         + ((" — " + str(x.get("note"))) if (x.get("note") or "") else "")
                         for x in ev))
+                
+                msg = (f"Assalam-o-Alaikum {o['customer_name']}! Aap ka order "
+                       f"#{o['order_no']} ({money(o['total'], CUR)}) confirm ho gaya hai. "
+                       f"Shukriya!")
+                st.markdown(f"<a class='wa' style='position:static;display:inline-flex' "
+                            f"href='{wa_link(o['whatsapp'], msg)}' target='_blank'>"
+                            f"💬 Customer ko WhatsApp</a>", unsafe_allow_html=True)
+                
+                # ----------------- Print Label Section -----------------
+                label_html = f"""
+                <html>
+                <head>
+                    <title>Print Label - #{o['order_no']}</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; padding: 20px; }}
+                        .label-box {{ border: 2px solid #000; width: 400px; padding: 20px; border-radius: 10px; }}
+                        .header {{ text-align: center; font-size: 24px; font-weight: bold; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }}
+                        .section {{ margin-bottom: 15px; font-size: 16px; }}
+                        .bold {{ font-weight: bold; }}
+                        .cod {{ font-size: 22px; font-weight: bold; text-align: center; border: 2px dashed #000; padding: 10px; margin-top: 20px; }}
+                    </style>
+                </head>
+                <body onload="window.print()">
+                    <div class="label-box">
+                        <div class="header">{S['shop_name']} - Air Waybill</div>
+                        
+                        <div class="section">
+                            <span class="bold">Order #:</span> {o['order_no']}<br>
+                            <span class="bold">Date:</span> {str(o['created_at'])[:10]}
+                        </div>
+                        
+                        <div class="section">
+                            <span class="bold">Deliver To:</span><br>
+                            {o['customer_name']}<br>
+                            {o['phone']}<br>
+                            {o['address']}, {o['city']}
+                        </div>
+                        
+                        <div class="section">
+                            <span class="bold">Items:</span><br>
+                            {', '.join([f"{i['title']} (x{i['qty']})" for i in o.get('items', [])])}
+                        </div>
+                        
+                        <div class="cod">
+                            COD AMOUNT: {money(o['total'], CUR)}
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+                
+                st.download_button(
+                    label="🖨️ Print Label (AWB)",
+                    data=label_html,
+                    file_name=f"Label_Order_{o['order_no']}.html",
+                    mime="text/html",
+                    use_container_width=True,
+                    key=f"print_{o['id']}"
+                )
+
             with c2:
                 stt = st.selectbox("Status", STATUSES,
                                    index=STATUSES.index(o["status"]), key=f"s{o['id']}")
@@ -652,12 +712,6 @@ with tabs[4]:
                     ss.flash = ("📧 Customer ko email bhej di." if ok
                                 else "⚠️ Email fail: " + str(info))
                     st.rerun()
-                msg = (f"Assalam-o-Alaikum {o['customer_name']}! Aap ka order "
-                       f"#{o['order_no']} ({money(o['total'], CUR)}) confirm ho gaya hai. "
-                       f"Shukriya!")
-                st.markdown(f"<a class='wa' style='position:static;display:inline-flex' "
-                            f"href='{wa_link(o['whatsapp'], msg)}' target='_blank'>"
-                            f"💬 Customer ko WhatsApp</a>", unsafe_allow_html=True)
 
 # ================================================================== PROFIT
 with tabs[5]:
