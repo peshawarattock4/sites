@@ -76,6 +76,7 @@ def build_slides(products: list, custom_banners: list, cur="Rs") -> list:
             "img": b.get("image_url") or "",
             "from": b.get("bg_from") or "#1e1b4b",
             "to": b.get("bg_to") or "#4338ca",
+            "text_color": b.get("text_color") or "#ffffff",
             "price": "", "old": "", "off": "",
         })
     for p in products:
@@ -92,6 +93,7 @@ def build_slides(products: list, custom_banners: list, cur="Rs") -> list:
             "sub": p.get("offer_text") or (p.get("description") or "")[:96],
             "img": p.get("cover") or "",
             "from": g[0], "to": g[1],
+            "text_color": "#ffffff",
             "price": money(p["final_price"], cur),
             "old": money(p["price"], cur) if p.get("on_sale") else "",
             "off": off,
@@ -110,13 +112,14 @@ def _slide_html(s: dict) -> str:
     price = f"<div class='hero-price'>{''.join(parts)}</div>" if parts else ""
     img = (f"<div class='hero-img' style=\"background-image:url('{e(s['img'])}')\"></div>"
            if s["img"] else "")
+    tc = e(s.get("text_color", "#ffffff"))
     return (
         f"<div class='hero-slide' style=\"background:linear-gradient(120deg,"
         f"{e(s['from'])},{e(s['to'])})\">"
         f"<div class='hero-txt'>"
-        f"<span class='hero-kicker'>{e(s['kicker'])}</span>"
-        f"<div class='hero-h'>{e(s['title'])}</div>"
-        f"<div class='hero-sub'>{e(s['sub'])}</div>"
+        f"<span class='hero-kicker' style='color:{tc}; border-color:{tc}'>{e(s['kicker'])}</span>"
+        f"<div class='hero-h' style='color:{tc}'>{e(s['title'])}</div>"
+        f"<div class='hero-sub' style='color:{tc}; opacity:0.9'>{e(s['sub'])}</div>"
         f"{price}</div>{img}</div>"
     )
 
