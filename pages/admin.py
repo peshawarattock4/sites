@@ -30,29 +30,23 @@ ss.setdefault("tries", 0)
 ss.setdefault("thread", None)
 ss.setdefault("flash", "")
 ss.setdefault("img_blob", None)
-ss.setdefault("otp_h", "")        # code ka SHA-256 — plain code kabhi save nahi
-ss.setdefault("otp_exp", 0.0)     # kab tak valid hai
-ss.setdefault("otp_to", "")       # kis address par bheja
-ss.setdefault("otp_try", 0)       # ghalat koshishein
-ss.setdefault("otp_at", 0.0)      # aakhri send ka waqt (resend gap)
-ss.setdefault("otp_n", 0)         # session mein kitne code bheje
+ss.setdefault("otp_h", "")
+ss.setdefault("otp_exp", 0.0)
+ss.setdefault("otp_to", "")
+ss.setdefault("otp_try", 0)
+ss.setdefault("otp_at", 0.0)
+ss.setdefault("otp_n", 0)
 
 
 # ================================================================== LOGIN
-# Login sirf **email code** se hota hai: jo Gmail secrets ke [admin]
-# allowed_emails (ya [email] owner_email) mein likha hai, usi par 6-digit code
-# jaata hai aur wohi code portal kholta hai. Google OAuth hata diya gaya hai —
-# is liye Authlib ki bhi zaroorat nahi rahi.
-OTP_LEN = 6            # code kitne digits ka
-OTP_TTL = 600          # 10 minute tak chalega
-OTP_MAX_TRY = 5        # aik code par max ghalat koshishein
-OTP_GAP = 60           # dobara code bhejne se pehle itne second wait
-OTP_MAX_SEND = 6       # aik session mein max kitne code bhej sakte hain
+OTP_LEN = 6
+OTP_TTL = 600
+OTP_MAX_TRY = 5
+OTP_GAP = 60
+OTP_MAX_SEND = 6
 
 
 def mail_cfg() -> dict:
-    """[email] block. (st.secrets ke nested tables plain `dict` nahi hote,
-    is liye seedha dict() bana lete hain.)"""
     try:
         return dict(st.secrets.get("email", {}) or {})
     except Exception:
@@ -60,7 +54,6 @@ def mail_cfg() -> dict:
 
 
 def allowed_emails() -> set:
-    """Sirf inhi email addresses par login code ja sakta hai."""
     cfg = st.secrets.get("admin", {})
     v = cfg.get("allowed_emails", [])
     if isinstance(v, str):
@@ -69,8 +62,6 @@ def allowed_emails() -> set:
 
 
 def otp_targets() -> list:
-    """Code kahan bhej sakte hain — allow-list, warna [email] owner_email.
-    Yahan koi user-input address nahi aata, warna koi bhi code manga leta."""
     lst = sorted(allowed_emails())
     if lst:
         return lst
@@ -79,7 +70,6 @@ def otp_targets() -> list:
 
 
 def otp_ready() -> tuple:
-    """(chalega?, kyun nahi) — SMTP details aur target address dono laazmi."""
     c = mail_cfg()
     if str(c.get("enabled", True)).strip().lower() in ("false", "0", "no", "off"):
         return False, "[email] mein `enabled = false` hai."
@@ -92,7 +82,6 @@ def otp_ready() -> tuple:
 
 
 def _mask(em: str) -> str:
-    """a****i@gmail.com — login page par poora address kisi ko na dikhe."""
     em = str(em or "").strip()
     if "@" not in em:
         return em
@@ -102,8 +91,6 @@ def _mask(em: str) -> str:
 
 
 def _smtp_send(to: str, subject: str, body: str) -> tuple:
-    """Chhota stdlib SMTP sender — notify.py ke sath koi taalluq nahi rakhta
-    taake login kabhi kisi doosri file par depend na karay."""
     c = mail_cfg()
     host = str(c.get("host") or "smtp.gmail.com").strip()
     port = int(c.get("port") or 587)
@@ -135,7 +122,6 @@ def _smtp_send(to: str, subject: str, body: str) -> tuple:
 
 
 def send_otp(to: str) -> tuple:
-    """Naya code banao aur bhejo. Plain code kahin save nahi hota — sirf hash."""
     to = str(to or "").strip().lower()
     if to not in set(otp_targets()):
         return False, "Ye address allow-list mein nahi hai."
@@ -164,7 +150,6 @@ def send_otp(to: str) -> tuple:
 
 
 def check_otp(entered: str) -> tuple:
-    """Code match karo — hamesha constant-time compare se."""
     if not ss.otp_h:
         return False, "Pehle code bhejein."
     if time.time() > float(ss.otp_exp or 0):
@@ -233,9 +218,6 @@ def login_gate() -> bool:
                         'app_password = "abcd efgh ijkl mnop"   # Gmail App Password\n'
                         'sender_name  = "My Store"\n'
                         'owner_email  = "aapkastore@gmail.com"\n', language="toml")
-                st.caption("**Gmail App Password:** Google Account → Security → "
-                           "2-Step Verification ON → App passwords → naya banayein. "
-                           "Normal Gmail password SMTP par kaam nahi karta.")
         elif not ss.otp_h:
             to = targets[0]
             if len(targets) > 1:
@@ -297,10 +279,6 @@ def login_gate() -> bool:
                              "**Manage app → Settings → Secrets** mein ye daalein:")
                     st.code('[admin]\nusername = "admin"\n'
                             'password_sha256 = "<sha256 hash>"', language="toml")
-                    st.caption("Hash banane ke liye apne PC par ye chalayein:")
-                    st.code('python -c "import hashlib;'
-                            "print(hashlib.sha256('MeraStrongPass123!'.encode()).hexdigest())\"",
-                            language="bash")
             elif ss.tries >= 5:
                 st.error("Bohat zyada ghalat koshishein. Thori dair baad page reload karein.")
             else:
@@ -348,7 +326,6 @@ tabs = st.tabs(["📊 Dashboard", "📦 Products", "🗂️ Categories", "🖼�
                 "🧾 Orders", "💰 Profit / Loss", "💬 Live Messages",
                 "📣 Promote", "⚙️ Settings"])
 STATUSES = ["new", "confirmed", "shipped", "delivered", "cancelled"]
-# Profit ke liye default: cancelled orders nahi ginte
 COUNTED = ("new", "confirmed", "shipped", "delivered")
 
 # ================================================================== DASHBOARD
@@ -371,7 +348,6 @@ with tabs[0]:
     j[1].metric("Revenue", money(_T["revenue"], CUR))
     j[2].metric("Cost", money(_T["cost"], CUR))
     j[3].metric("Profit", money(_T["profit"], CUR), str(_T["margin"]) + "% margin")
-    st.caption("Poori tafseel **💰 Profit / Loss** tab mein.")
 
     section("🔥 Sale par products")
     sale = [p for p in allp if p["on_sale"]]
@@ -401,23 +377,20 @@ with tabs[1]:
             stock = p3.number_input("Stock", 0, step=1, value=10)
             b1, b2 = st.columns(2)
             cost = b1.number_input("Purchase price (kharid) — sirf admin", 0.0,
-                                   step=50.0,
-                                   help="Ye customer ko kahin nahi dikhta. Profit "
-                                        "isi se calculate hota hai.")
+                                   step=50.0)
             exp = b2.number_input("Expense per piece (packing/ads) — sirf admin",
-                                  0.0, step=10.0,
-                                  help="Har piece par aane wala extra kharcha.")
+                                  0.0, step=10.0)
             offer = st.text_input("Offer text (banner par dikhega)",
                                   placeholder="Buy 1 Get 1 Free")
             desc = st.text_area("Description", height=110)
-            hl = st.text_area("Highlights — har line ek point", height=90,
-                              placeholder="100% original\nFree delivery\n7 din return")
+            hl = st.text_area("Highlights — har line ek point", height=90)
             st.markdown("**Images — max 5**")
             files = st.file_uploader(
                 "Upload", accept_multiple_files=True,
                 type=["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
                 label_visibility="collapsed")
             urls = st.text_area("…ya image URLs (har line ek URL)", height=70)
+            vid_url = st.text_input("YouTube / TikTok Video URL (Optional)")
             f1, f2 = st.columns(2)
             feat = f1.checkbox("Featured", value=False)
             act = f2.checkbox("Active (site par live)", value=True)
@@ -439,6 +412,7 @@ with tabs[1]:
                         "images": imgs[:5], "price": float(price),
                         "sale_price": float(sale_p) if sale_p > 0 else None,
                         "stock": int(stock), "category_id": CAT_MAP[cat],
+                        "video_url": vid_url.strip() or None,
                         "offer_text": offer.strip() or None,
                         "badge": badge.strip() or None,
                         "cost_price": float(cost), "expense": float(exp),
@@ -473,10 +447,6 @@ with tabs[1]:
                                        step=50.0)
                 exp = k2.number_input("Expense per piece", 0.0,
                                       value=float(pick.get("expense") or 0), step=10.0)
-                st.caption("Is waqt ek piece par profit: **"
-                           + money(pick.get("unit_profit") or 0, CUR) + "**  ("
-                           + str(pick.get("margin_pct") or 0) + "% margin)  •  "
-                           "purchase price 0 ho to profit report ghalat aayegi")
                 offer = st.text_input("Offer text", pick.get("offer_text") or "")
                 desc = st.text_area("Description", pick.get("description") or "", height=90)
                 hl = st.text_area("Highlights", "\n".join(pick["highlights"]), height=80)
@@ -485,6 +455,7 @@ with tabs[1]:
                     type=["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"])
                 keep = st.multiselect("Mojooda images rakhein", pick["images"],
                                       default=pick["images"])
+                vid_url = st.text_input("YouTube / TikTok Video URL (Optional)", pick.get("video_url") or "")
                 g1, g2 = st.columns(2)
                 feat = g1.checkbox("Featured", value=bool(pick["is_featured"]))
                 act = g2.checkbox("Active", value=bool(pick["is_active"]))
@@ -508,6 +479,7 @@ with tabs[1]:
                     "sale_price": float(sale_p) if sale_p > 0 else None,
                     "stock": int(stock),
                     "category_id": CAT_MAP.get(cat) if cat else None,
+                    "video_url": vid_url.strip() or None,
                     "offer_text": offer.strip() or None,
                     "cost_price": float(cost), "expense": float(exp),
                     "is_featured": feat, "is_active": act,
@@ -721,9 +693,7 @@ with tabs[5]:
     d1 = f1.date_input("Se", today.replace(day=1), key="pf_from")
     d2 = f2.date_input("Tak", today, key="pf_to")
     picked = f3.multiselect("Kon se orders ginne hain", STATUSES,
-                            default=list(COUNTED), key="pf_st",
-                            help="Sirf asal bikri ka profit dekhna ho to bas "
-                                 "'delivered' rakhein.")
+                            default=list(COUNTED), key="pf_st")
     rep = db.profit_report(str(d1), str(d2) + "T23:59:59", tuple(picked))
     T = rep["totals"]
 
@@ -735,13 +705,8 @@ with tabs[5]:
     m[4].metric("Delivery collected", money(T["delivery"], CUR))
     if T["orders"] and T["profit"] < 0:
         st.error("⚠️ Is period mein **loss** ho raha hai — sale price cost se kam hai.")
-    st.caption("Delivery fee profit mein nahi gini gayi kyunki wo courier ko chali "
-               "jaati hai. Revenue sirf products ka hai.")
     if rep["no_cost"]:
-        st.warning("In products ki **purchase price set nahi** hai, is liye profit "
-                   "asal se zyada dikh raha hai — Products tab mein jaa kar bhar "
-                   "dein: " + ", ".join(rep["no_cost"][:12])
-                   + (" …" if len(rep["no_cost"]) > 12 else ""))
+        st.warning("In products ki **purchase price set nahi** hai: " + ", ".join(rep["no_cost"][:12]))
 
     if not rep["months"]:
         empty("Is period mein koi order nahi mila.")
@@ -773,18 +738,6 @@ with tabs[5]:
         st.download_button("⬇️ Excel/CSV download karein", buf.getvalue(),
                            file_name="profit_" + str(d1) + "_" + str(d2) + ".csv",
                            mime="text/csv", use_container_width=True)
-
-    with st.expander("ℹ️ Profit kaise nikalta hai?"):
-        st.markdown(
-            "- **Revenue** = order mein product ka price × qty (delivery fee alag)\n"
-            "- **Cost** = (purchase price + expense per piece) × qty\n"
-            "- **Profit** = Revenue − Cost\n"
-            "- Order karte waqt product ki cost order ke andar **save** ho jaati "
-            "hai, is liye baad mein purchase price badalne se purani reports "
-            "nahi badalti\n"
-            "- Jo purane orders migration se pehle ke hain, un mein snapshot nahi "
-            "hota — un ke liye product ki **aaj wali** cost use hoti hai")
-
 
 # ================================================================== LIVE CHAT
 with tabs[6]:
@@ -846,8 +799,6 @@ with tabs[7]:
         with pcol:
             if sp["cover"]:
                 st.image(sp["cover"], use_container_width=True)
-            else:
-                empty("Is product ki koi image nahi — Facebook par preview khali aayega.")
             if sp["cover"] and st.button("🖼️ Image download karein",
                                          use_container_width=True):
                 blob, msg = social.fetch_image(sp["cover"])
@@ -859,18 +810,10 @@ with tabs[7]:
                 st.download_button("⬇️ Save karein", ss.img_blob[1],
                                    file_name=f"{sp['id']}.jpg", mime="image/jpeg",
                                    use_container_width=True)
-            st.caption("Manual tareeqa: image save karein → Facebook par **photo post** "
-                       "banayein → caption paste kar dein. Photo posts ko link posts se "
-                       "zyada reach milti hai.")
 
         with tcol:
             st.markdown("**Share link — Facebook/WhatsApp par yahi paste karein**")
             st.code(link or "site_url set nahi hai", language="text")
-            if not social.og_ready():
-                st.info("Ye seedha site ka link hai — Facebook is par product ki image "
-                        "nahi dikha sakta. Image wala preview chalu karne ke liye "
-                        "Supabase Edge Function `og` deploy karein (Settings tab → "
-                        "“Share preview kaise deploy karein”).")
             cap = st.text_area("Post caption (edit kar sakte hain)",
                                social.caption(sp, CUR, S["shop_name"], link),
                                height=270, key=f"cap_{sp['id']}")
@@ -894,12 +837,6 @@ with tabs[7]:
                     ok, info = social.fb_post_product(sp, CUR, S["shop_name"],
                                                       mode, cap, link)
                 (st.success if ok else st.error)(info)
-            if not social.fb_ready():
-                st.caption("Auto-post band hai — `[facebook] page_id` aur "
-                           "`page_access_token` Secrets mein daalein (Settings tab).")
-            if link:
-                st.link_button("🔄 Facebook ka purana preview refresh karein",
-                               social.fb_debugger(link), use_container_width=True)
 
 # ================================================================== SETTINGS
 with tabs[8]:
@@ -925,108 +862,3 @@ with tabs[8]:
                     db.save_setting(k, v)
                 st.success("Save ho gaya — site par live.")
                 st.rerun()
-
-    st.divider()
-    section("🔔 Notifications", "Gmail alerts + owner WhatsApp alert")
-    st.caption(notify.status())
-    n1, n2 = st.columns([1.7, 1], vertical_alignment="bottom")
-    test_to = n1.text_input("Test email is address par bhejein",
-                            notify.email_cfg()["owner"] or "")
-    if n2.button("🔔 Test bhejein", type="primary", use_container_width=True):
-        with st.spinner("Bhej rahe hain…"):
-            res = notify.send_test(test_to, S["shop_name"])
-        for kind, (ok, info) in res.items():
-            (st.success if ok else st.error)(f"{kind}: {info}")
-
-    with st.expander("📋 Secrets template — Manage app → Settings → Secrets"):
-        st.code('[email]\n'
-                'enabled      = true\n'
-                'host         = "smtp.gmail.com"\n'
-                'port         = 587\n'
-                'sender       = "aapkastore@gmail.com"\n'
-                'app_password = "abcd efgh ijkl mnop"   # Gmail App Password\n'
-                'sender_name  = "My Store"\n'
-                'owner_email  = "aapkastore@gmail.com"\n'
-                '\n'
-                '[whatsapp]\n'
-                'enabled          = true\n'
-                'provider         = "callmebot"\n'
-                'owner_phone      = "03001234567"\n'
-                'callmebot_apikey = "123456"\n', language="toml")
-        st.caption("**Gmail App Password:** Google Account → Security → 2-Step "
-                   "Verification ON karein → App passwords → naya banayein. "
-                   "Normal Gmail password SMTP par kaam nahi karta.")
-        st.caption("**CallMeBot API key:** callmebot.com/blog/free-api-whatsapp-messages "
-                   "khol kar wahan diya hua bot number apne contacts mein save karein, "
-                   "us par WhatsApp se likhein: “I allow callmebot to send me messages”. "
-                   "Jawab mein API key aa jayegi.")
-
-    st.divider()
-    section("🔐 Admin login", "Portal email code (OTP) se khulta hai")
-    _ok, _why = otp_ready()
-    if _ok:
-        st.success("✅ Login code in address par jaata hai: "
-                   + ", ".join("**" + _mask(x) + "**" for x in otp_targets()))
-    else:
-        st.warning("⚠️ " + _why)
-    st.caption("Naya admin add karna ho to Secrets ke `[admin] allowed_emails` mein "
-               "us ka Gmail likh dein (list khali ho to `[email] owner_email` wala "
-               "address use hota hai). Code " + str(OTP_LEN) + " digits ka hota hai, "
-               + str(OTP_TTL // 60) + " minute chalta hai, aur " + str(OTP_MAX_TRY)
-               + " ghalat koshishon ke baad khatam ho jaata hai.")
-    with st.expander("📋 Secrets template — [admin]"):
-        st.code('[admin]\n'
-                '# Email code login (asal login):\n'
-                'allowed_emails  = ["aapkastore@gmail.com"]\n'
-                '# Backup password login:\n'
-                'username        = "admin"\n'
-                'password_sha256 = "<sha256 hash>"\n', language="toml")
-        st.caption("Code bhejne ke liye upar wala `[email]` block hi use hota hai — "
-                   "yani jo Gmail wahan `sender`/`owner_email` mein hai, wohi code "
-                   "bhejta bhi hai. Google OAuth ki zaroorat nahi rahi.")
-
-    st.divider()
-    section("📣 Facebook / Share", "Link preview + Page par auto-post")
-    st.caption(social.status())
-    if social.fb_ready() and st.button("🔍 Facebook token test karein",
-                                       use_container_width=True):
-        ok, info = social.fb_page_info()
-        (st.success if ok else st.error)(info)
-
-    with st.expander("📋 Secrets template — [share] aur [facebook]"):
-        st.code('[share]\n'
-                'site_url = "https://mystorepk.streamlit.app"\n'
-                '# Edge Function deploy hone ke baad ye line add karein:\n'
-                '# og_base = "https://<project-ref>.supabase.co/functions/v1/og"\n'
-                '\n'
-                '[facebook]\n'
-                'enabled           = true\n'
-                'page_id           = "1234567890"\n'
-                'page_access_token = "EAA...lamba...token"\n'
-                '# graph_version   = "v23.0"   # "unsupported version" error par badlein\n',
-                language="toml")
-        st.caption("**Page ID:** apne Facebook Page → About → sab se niche Page ID. "
-                   "**Token:** developers.facebook.com → apni app → Tools → "
-                   "Graph API Explorer → apna Page chunein → permissions "
-                   "`pages_manage_posts` aur `pages_read_engagement` → Generate. "
-                   "Ye token 1-2 ghante chalta hai; lamba token banane ke liye "
-                   "Access Token Debug Tool → **Extend Access Token**.")
-        st.caption("Apne hi Page par post karne ke liye Meta ka app review zaroori "
-                   "nahi — Standard Access apne owned Page par kaam kar jaata hai.")
-
-    with st.expander("🚀 Share preview (image wala link) kaise deploy karein"):
-        st.markdown(
-            "1. Supabase → **Edge Functions** → *Deploy a new function* → **Via Editor**\n"
-            "2. Naam rakhein `og` → repo ki file `supabase/functions/og/index.ts` ka "
-            "poora code paste karein → **Deploy**\n"
-            "3. Usi function ke **Settings** mein **Verify JWT = OFF** karein — warna "
-            "Facebook ka crawler 401 khayega aur preview khali rahega\n"
-            "4. Edge Functions → **Secrets** mein `SITE_URL = " +
-            (social.site_url() or "https://mystorepk.streamlit.app") +
-            "` daalein (chahein to `SHOP_NAME` aur `CURRENCY` bhi)\n"
-            "5. Test karein: `https://<project-ref>.supabase.co/functions/v1/og"
-            "?p=<product-id>&debug=1`\n"
-            "6. Sahi chale to Streamlit Secrets mein `[share] og_base = "
-            "\"https://<project-ref>.supabase.co/functions/v1/og\"` add kar dein")
-        st.caption("Function sirf active product ka naam, price aur pehli image "
-                   "dikhata hai — koi secret expose nahi hota.")
