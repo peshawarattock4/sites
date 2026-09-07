@@ -38,10 +38,6 @@ def _safe(q: str) -> str:
 
 
 # ------------------------------------------------- schema-tolerant write layer
-# Agar koi migration na chali ho to PostgREST kehta hai:
-#   PGRST204  "Could not find the 'courier' column of 'orders' in the schema cache"
-# Aisi surat mein poora order/product fail karne ke bajaye sirf wo column
-# nikaal kar dobara koshish karte hain — site chalti rehti hai.
 _MISSING_COL = re.compile(r"'([A-Za-z_][A-Za-z0-9_]*)' column", re.I)
 
 
@@ -158,7 +154,6 @@ def get_product(pid: str) -> dict | None:
 
 
 def enrich(p: dict) -> dict:
-    """Sale / discount fields compute karta hai."""
     price = float(p.get("price") or 0)
     sale = p.get("sale_price")
     sale = float(sale) if sale not in (None, "") else None
@@ -175,9 +170,10 @@ def enrich(p: dict) -> dict:
     p["images"] = [i for i in imgs if i][:5]
     p["cover"] = p["images"][0] if p["images"] else ""
     p["highlights"] = p.get("highlights") or []
-    # ---- admin-only cost fields (migration_03) — customer ko kahin nahi dikhte
-    p["cost_price"] = float(p.get("cost_price") or 0)   # kharid / purchase price
-    p["expense"] = float(p.get("expense") or 0)         # packing, ads, misc per unit
+    p["video_url"] = p.get("video_url") or ""
+    # ---- admin-only cost fields
+    p["cost_price"] = float(p.get("cost_price") or 0)
+    p["expense"] = float(p.get("expense") or 0)
     p["unit_cost"] = p["cost_price"] + p["expense"]
     p["unit_profit"] = p["final_price"] - p["unit_cost"]
     p["margin_pct"] = (int(round(p["unit_profit"] / p["final_price"] * 100))
@@ -234,17 +230,6 @@ def upload_image(file, folder: str = "products") -> str:
 
 # ------------------------------------------------------------------ orders
 def create_order(payload: dict) -> dict:
-    """Order insert **service_role** (sba) se hota hai, anon se nahi.
-
-    Wajah: `orders` par anon ki sirf INSERT policy hai, SELECT ki nahi. Magar
-    PostgREST default `Prefer: return=representation` bhejta hai, yani
-    `insert ... returning *` — aur RETURNING ke liye SELECT policy bhi chahiye
-    hoti hai. Is liye anon client
-    `42501 new row violates row-level security policy for table "orders"`
-    phaink deta tha. Ye insert Streamlit ke server par chalta hai (browser mein
-    key kabhi nahi jaati), is liye service key safe hai — chat_messages bhi
-    isi tarah kaam karta hai.
-    """
     data = {k: v for k, v in (payload or {}).items() if v is not None}
     row = (_insert("orders", data).data or [{}])[0]
     if row.get("id"):
@@ -263,8 +248,6 @@ def list_orders(status: str | None = None, limit: int = 300) -> list:
 
 def update_order_status(oid: str, status: str, note: str = "",
                         courier: str = "", tracking_no: str = ""):
-    """Status + courier/tracking save karta hai aur tracking history mein ek
-    event likh deta hai — customer ko yehi timeline nazar aati hai."""
     data = {"status": status,
             "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if (note or "").strip():
@@ -280,7 +263,6 @@ def update_order_status(oid: str, status: str, note: str = "",
 
 # --------------------------------------------------------- tracking (customer)
 def add_order_event(order_id: str, status: str, note: str = ""):
-    """order_events table na bhi ho to order kabhi fail nahi hona chahiye."""
     try:
         _insert("order_events", {"order_id": order_id, "status": status,
                                  "note": (note or "").strip() or None})
@@ -298,13 +280,6 @@ def get_order_events(order_id: str, limit: int = 40) -> list:
 
 
 def find_orders(phone: str, order_no: str = "", limit: int = 20) -> list:
-    """Customer apne mobile number se apne orders dekh sakta hai.
-
-    Read **service key** se hota hai (server-side), is liye `orders` par koi
-    public SELECT policy dene ki zaroorat nahi — kisi aur ka data leak nahi
-    hota. Number ke aakhri 10 digits par match karte hain taake 0300…,
-    +92300…, 92300… sab chal jayein.
-    """
     tail = re.sub(r"\D", "", str(phone or ""))[-10:]
     if len(tail) < 10:
         return []
@@ -327,8 +302,6 @@ def find_orders(phone: str, order_no: str = "", limit: int = 20) -> list:
 
 
 def _scan_orders(tail: str, no: str = "", limit: int = 20, scan: int = 1500) -> list:
-    """Fallback: number dashes/spaces ke sath save hua ho to ilike match nahi
-    karta — is liye recent orders utha kar sirf digits compare karte hain."""
     try:
         rows = (sba().table("orders").select("*")
                 .order("created_at", desc=True).limit(scan).execute().data or [])
@@ -363,13 +336,6 @@ def list_orders_range(start: str = "", end: str = "", statuses: tuple = (),
 
 
 def order_profit(o: dict, cost_map: dict) -> dict:
-    """Ek order ka revenue / cost / profit.
-
-    Cost pehle order ke apne snapshot se (`items[].cost` + `items[].expense`,
-    jo checkout ke waqt save hoti hai) — is liye baad mein purchase price badle
-    to purani reports nahi badalti. Snapshot na ho to products table ki
-    current cost use hoti hai.
-    """
     rev = cst = 0.0
     lines, unknown = [], set()
     for it in (o.get("items") or []):
@@ -395,8 +361,6 @@ def order_profit(o: dict, cost_map: dict) -> dict:
 
 
 def profit_report(start: str = "", end: str = "", statuses: tuple = ()) -> dict:
-    """Monthly aur per-product profit/loss. Delivery fee alag rakhi jaati hai
-    (wo courier ko chali jaati hai, is liye profit mein nahi ginte)."""
     orders = list_orders_range(start, end, tuple(statuses))
     cmap = {p["id"]: p for p in get_products(limit=1000, active_only=False)}
     tot = {"orders": len(orders), "revenue": 0.0, "cost": 0.0, "profit": 0.0,
@@ -450,7 +414,7 @@ def list_threads(limit: int = 800) -> list:
     rows = (sba().table("chat_messages").select("*")
             .order("created_at", desc=True).limit(limit).execute().data or [])
     threads: dict[str, dict] = {}
-    for r in rows:                                    # newest -> oldest
+    for r in rows:
         t = threads.setdefault(r["session_id"], {
             "session_id": r["session_id"], "name": "", "whatsapp": "",
             "last": r["message"], "last_at": r["created_at"], "unread": 0,
