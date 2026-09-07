@@ -30,6 +30,7 @@ ss.setdefault("view", "home")
 ss.setdefault("cart", {})
 ss.setdefault("cat", None)
 ss.setdefault("q", "")
+ss.setdefault("sbox", "")          # Clear filter ko chalane ke liye iski default value yahan set ki hai
 ss.setdefault("pid", None)
 ss.setdefault("img_i", 0)
 ss.setdefault("sid", uuid.uuid4().hex[:14])
@@ -218,7 +219,8 @@ def header():
 
     c1, c2, c3, c4 = st.columns([4.3, 1.35, 1.0, 1.0], vertical_alignment="center")
     with c1:
-        st.text_input("s", value=ss.q, key="sbox", label_visibility="collapsed",
+        # Yahan se 'value=ss.q' hata diya gaya hai taake programmatic clearing sahi se kaam kare
+        st.text_input("s", key="sbox", label_visibility="collapsed",
                       placeholder="🔍  Product search karein… (naam, category, offer)",
                       on_change=lambda: (ss.update(q=ss.sbox, view="home", pid=None)))
     with c2:
