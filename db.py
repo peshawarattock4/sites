@@ -9,13 +9,18 @@ def sba() -> Client:
     return create_client(url, key)
 
 def get_settings():
+    default_name = st.secrets.get("shop", {}).get("name", "My Store")
     try:
         res = sba().table("settings").select("*").limit(1).execute()
-        if res.data:
-            return res.data[0]
+        if res.data and len(res.data) > 0:
+            row = res.data[0]
+            # Agar database mein shop_name nahi hai lekin name hai to use kar lo
+            if not row.get("shop_name"):
+                row["shop_name"] = row.get("name") or default_name
+            return row
     except Exception:
         pass
-    return {"shop_name": st.secrets.get("shop", {}).get("name", "My Store")}
+    return {"shop_name": default_name, "announcement": "", "delivery_fee": 0, "free_over": 0}
 
 def get_categories():
     try:
