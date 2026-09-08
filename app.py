@@ -230,13 +230,10 @@ def view_product():
         section("📝 Description")
         st.write(p["description"])
         
-    # ===== NEW SMART VIDEO PLAYER =====
     if p.get("video_url"):
         section("🎥 Product Video")
         v_url = p["video_url"].strip()
-        # YouTube ID nikalne ki koshish (Shorts ho ya normal link)
         yt_match = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([a-zA-Z0-9_-]{11})", v_url)
-        
         if yt_match:
             vid = yt_match.group(1)
             embed_url = f"https://www.youtube.com/embed/{vid}?rel=0"
@@ -247,10 +244,9 @@ def view_product():
             ''', unsafe_allow_html=True)
         else:
             try:
-                st.video(v_url) # Agar koi aur format ho (mp4) to Streamlit ka apna player
+                st.video(v_url)
             except:
                 st.error("Video format support nahi kar raha.")
-    # ==================================
 
     rel = [x for x in db.get_products(category_id=p.get("category_id"), limit=5) if x["id"] != p["id"]][:4]
     if rel: section("🔗 Related products"); grid(rel, "rel")
@@ -332,12 +328,65 @@ def view_thanks():
     if st.button("🏠 Home", type="primary", use_container_width=True): go("home", order=None)
 
 def view_track():
-    section("📦 Order Tracking")
-    # code omitted for brevity
+    section("📦 Order Tracking", "Apne order ka status check karein")
+    if st.button("← Back"):
+        go("home")
     
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        track_input = st.text_input("Order Number ya Phone Number enter karein", placeholder="Misal: 1001 ya 03001234567")
+    
+    if st.button("🔍 Track Karein", type="primary"):
+        if not track_input.strip():
+            st.error("Barah-e-karam order number ya phone number likhein.")
+        else:
+            with st.spinner("Search ho raha hai..."):
+                orders = db.search_orders(track_input.strip())
+                if not orders:
+                    empty("Is number par koi order nahi mila.")
+                else:
+                    for o in orders:
+                        st.markdown(f"""
+                        <div style='background:#f8fafc; padding:16px; border-radius:12px; margin-bottom:12px; border:1px solid #e2e8f0;'>
+                            <b>Order #{e(o.get('order_no'))}</b> — <span style='color:#059669; font-weight:700;'>{e(o.get('status','new').upper())}</span><br>
+                            <small><b>Name:</b> {e(o.get('customer_name'))} | <b>Phone:</b> {e(o.get('phone'))}</small><br>
+                            <small><b>Address:</b> {e(o.get('address'))}, {e(o.get('city'))}</small><br>
+                            <small><b>Total Amount:</b> {money(o.get('total'), CUR)}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+
 def view_chat():
-    section("💬 Live Chat")
-    # code omitted for brevity
+    section("💬 Live Support Chat", "Hum se direct baat karein")
+    if st.button("← Back"):
+        go("home")
+    
+    if not ss.cname:
+        with st.form("chat_login"):
+            st.markdown("Chat shuru karne se pehle apni tafseelat dein:")
+            nc = st.text_input("Aap ka Naam", placeholder="Ali")
+            wc = st.text_input("WhatsApp Number", placeholder="03001234567")
+            if st.form_submit_button("Chat Shuru Karein", type="primary"):
+                if len(nc.strip()) >= 2 and len(wc.strip()) >= 10:
+                    ss.cname = nc.strip()
+                    ss.cwa = wc.strip()
+                    st.rerun()
+                else:
+                    st.error("Sahi naam aur WhatsApp number likhein.")
+        return
+
+    msgs = db.get_messages(ss.sid)
+    st.markdown(chat_html(msgs), unsafe_allow_html=True)
+    
+    with st.form("chat_form", clear_on_submit=True):
+        txt = st.text_input("Apna paigham likhein...", label_visibility="collapsed")
+        sent = st.form_submit_button("Bhejein ➔", type="primary")
+        if sent and txt.strip():
+            db.send_message(ss.sid, ss.cname, ss.cwa, "user", txt.strip())
+            ping_owner(txt.strip())
+            st.rerun()
+    
+    if st.button("🔄 Refresh Chat"):
+        st.rerun()
 
 header()
 {"home": view_home, "product": view_product, "cart": view_cart, "checkout": view_checkout, "thanks": view_thanks, "chat": view_chat, "track": view_track}.get(ss.view, view_home)()
